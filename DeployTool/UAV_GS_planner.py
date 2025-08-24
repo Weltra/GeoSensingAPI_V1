@@ -31,22 +31,6 @@ os.environ['OMP_NUM_THREADS'] = '1'
 # ==============================================================================
 # 1. 辅助函数 (Helper Functions)
 # ==============================================================================
-def create_wuhan_geojson(file_path="wuhan_city_bounds.geojson"):
-	"""
-	生成一个大致覆盖整个武汉市范围的矩形GeoJSON文件用于测试。
-	"""
-	if os.path.exists(file_path):
-		# print(f"文件 '{file_path}' 已存在，将使用现有文件。")
-		return
-	print(f"正在创建覆盖武汉市的大范围GeoJSON文件: '{file_path}'")
-	polygon_geom = Polygon([
-		(113.7, 29.9), (115.1, 29.9), (115.1, 31.2), (113.7, 31.2), (113.7, 29.9)
-	])
-	gdf = gpd.GeoDataFrame(geometry=[polygon_geom], crs="EPSG:4326")
-	gdf.to_file(file_path, driver='GeoJSON')
-	print("大范围GeoJSON文件创建成功。")
-
-
 def get_utm_crs(gdf_latlon):
 	"""根据GeoDataFrame的质心计算最合适的UTM坐标系。"""
 	if gdf_latlon.empty:
@@ -329,8 +313,8 @@ class CollaborativePlanner:
 
 	def get_results_as_json(self) -> dict:
 		"""将规划结果编译为结构化的字典（用于JSON序列化）。"""
-		summary = {"total_area_sqm": self.total_area_shape_utm.area,
-		           "final_collaborative_coverage_percentage": self.coverage_percentage,
+		summary = {"total_area_sqm": float(self.total_area_shape_utm.area),  # 增加转换
+		           "final_collaborative_coverage_percentage": float(self.coverage_percentage),  # 增加转换
 		           "ground_station_contribution": {}, "uav_results": []}
 
 		if self.processed_stations and self.ground_station_coverage_utm:
@@ -338,28 +322,54 @@ class CollaborativePlanner:
 			summary["ground_station_contribution"] = {
 				"station_count": len(self.processed_stations),
 				"stations_details": [{
-					'id': s['id'], 'radius_m': s['radius_m'],
+					'id': s['id'],
+					'radius_m': float(s['radius_m']),  # 增加转换
 					'coords_latlon':
 						gpd.GeoSeries([s['geom_utm']], crs=self.utm_crs).to_crs(self.original_crs).iloc[0].coords[0]
 				} for s in self.processed_stations],
-				"total_covered_area_sqm": gs_coverage_in_area.area
+				"total_covered_area_sqm": float(gs_coverage_in_area.area)  # 增加转换
 			}
 
 		for res in self.results:
 			uav_p = res['uav_params']
 			sub_area_utm = res.get('sub_area_utm')
+			path_utm = res.get('path_utm')
+
 			sub_area_latlon_geom = None
+			path_latlon_geom = None
+			coverage_latlon_geom = None
+
 			if sub_area_utm and not sub_area_utm.is_empty:
 				sub_area_latlon_geom = gpd.GeoSeries([sub_area_utm], crs=self.utm_crs).to_crs(self.original_crs).iloc[
 					0].__geo_interface__
 
+			if path_utm and not path_utm.is_empty:
+				path_latlon_geom = gpd.GeoSeries([path_utm], crs=self.utm_crs).to_crs(self.original_crs).iloc[
+					0].__geo_interface__
+				coverage_poly_utm = path_utm.buffer(uav_p['swath_width'] / 2, cap_style=2)
+				coverage_latlon_geom = \
+				gpd.GeoSeries([coverage_poly_utm], crs=self.utm_crs).to_crs(self.original_crs).iloc[
+					0].__geo_interface__
+
+			# 创建一个确保所有值都是标准Python类型的无人机参数字典
+			serializable_uav_params = {
+				'id': int(uav_p['id']),
+				'speed': float(uav_p['speed']),
+				'flight_time': int(uav_p['flight_time']),
+				'swath_width': float(uav_p['swath_width'])
+			}
+
 			summary["uav_results"].append({
-				"uav_id": res['uav_id'], "is_feasible": bool(res.get('is_feasible', False)),
-				"assigned_area_sqm": sub_area_utm.area if sub_area_utm else 0,
-				"path_length_m": res.get('path_length', 0),
-				"estimated_flight_time_s": res.get('flight_duration_needed', 0),
-				"max_flight_time_s": uav_p['flight_time'],
-				"assigned_area_geojson": sub_area_latlon_geom
+				"uav_id": int(res['uav_id']),
+				"uav_params": serializable_uav_params,  # 使用处理过后的字典
+				"is_feasible": bool(res.get('is_feasible', False)),
+				"assigned_area_sqm": float(sub_area_utm.area if sub_area_utm else 0),
+				"path_length_m": float(res.get('path_length', 0)),
+				"estimated_flight_time_s": float(res.get('flight_duration_needed', 0)),
+				"max_flight_time_s": int(uav_p['flight_time']),
+				"assigned_area_geojson": sub_area_latlon_geom,
+				"flight_path_geojson": path_latlon_geom,
+				"coverage_area_geojson": coverage_latlon_geom
 			})
 		return summary
 
@@ -500,9 +510,6 @@ if __name__ == '__main__':
 	# 定义输入和输出
 	GEOJSON_FILE = "D:\GeoSensingAPI\geojson\Wuhan.geojson"
 	OUTPUT_DIRECTORY = "planning_output_wuhan"
-
-	# 确保示例GeoJSON文件存在
-	create_wuhan_geojson(GEOJSON_FILE)
 
 	# 调用核心场景函数来运行整个流程
 	planning_results = run_planning_scenario(

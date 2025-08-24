@@ -1,10 +1,3 @@
-import json
-import numpy as np
-from datetime import datetime, timedelta
-from skyfield.api import load, EarthSatellite
-from skyfield.timelib import utc
-from shapely.geometry import Polygon, mapping
-
 
 import json
 import numpy as np

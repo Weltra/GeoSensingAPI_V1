@@ -22,7 +22,7 @@ def main():
 
     # 加载武汉市边界
     try:
-        with open('geojson/Wuhan.geojson', 'r') as f:
+        with open('data/Wuhan.geojson', 'r') as f:
             wuhan_boundary = json.load(f)
     except:
         # 简化边界

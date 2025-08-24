@@ -48,13 +48,19 @@ def get_utm_crs(gdf_latlon):
 		return "EPSG:32649"
 
 
+# ==============================================================================
+# ** 可视化函数已修改 **
+# 基于您提供的 UAV_GS_planner.py 中的可视化逻辑进行更新
+# ==============================================================================
 def create_comprehensive_visualization(wuhan_boundary, uncovered_area,
                                        completion_results, planning_mode, satellite_plan_data=None,
                                        output_file="comprehensive_coverage_map.html"):
-	"""创建信息丰富的综合可视化地图"""
+	"""创建信息丰富的综合可视化地图 (更新以展示无人机分配区域、覆盖区域和路径)"""
 	print("\n=== 正在创建最终的综合可视化地图... ===")
 	try:
 		import folium
+		import matplotlib.cm as cm
+		import matplotlib.colors as colors
 
 		center_lat, center_lon = 30.547, 114.405
 		m = folium.Map(location=[center_lat, center_lon], zoom_start=10, tiles="CartoDB positron")
@@ -63,7 +69,7 @@ def create_comprehensive_visualization(wuhan_boundary, uncovered_area,
 		               style_function=lambda x: {'color': 'black', 'weight': 3, 'fillOpacity': 0.05,
 		                                         'fillColor': 'black'}, tooltip='总任务区域').add_to(m)
 
-		# 可视化卫星方案 (无论是'optimal'还是'best_effort')
+		# 可视化卫星方案
 		if satellite_plan_data:
 			plan_name = "卫星最优方案" if satellite_plan_data['is_optimal'] else "卫星尽力而为方案"
 			coverage_ratio = satellite_plan_data['coverage_ratio']
@@ -97,23 +103,41 @@ def create_comprehensive_visualization(wuhan_boundary, uncovered_area,
 					               tooltip=f"地面站 {gs_detail['id']} (半径: {radius_m} m)").add_to(gs_group)
 					folium.Marker(location=[lat, lon], popup=f"地面站 {gs_detail['id']}",
 					              icon=folium.Icon(color='red', icon='broadcast-tower', prefix='fa')).add_to(gs_group)
+
+			# --- [无人机可视化更新] ---
 			uav_results = completion_results.get("uav_results", [])
 			if uav_results:
-				import matplotlib.cm as cm
-				import matplotlib.colors as colors
 				uav_count = len(uav_results)
 				cmap = cm.get_cmap('viridis', uav_count if uav_count > 0 else 1)
 				for i, uav_res in enumerate(uav_results):
 					uid = uav_res.get('uav_id', i + 1)
 					color = colors.to_hex(cmap(i))
+					# 为每架无人机（区域+路径）创建一个图层组
 					fg = folium.FeatureGroup(name=f"无人机 {uid}", show=True).add_to(m)
+
+					# 1. 可视化分配的区域 (虚线边框，浅色填充)
 					if uav_res.get("assigned_area_geojson"):
-						feature = {"type": "Feature", "geometry": uav_res["assigned_area_geojson"], "properties": {}}
-						assigned_area_gdf = gpd.GeoDataFrame.from_features([feature], crs="EPSG:4326")
-						folium.GeoJson(assigned_area_gdf,
+						folium.GeoJson(uav_res["assigned_area_geojson"],
+						               tooltip=f'无人机 {uid} 分配区域',
 						               style_function=lambda x, c=color: {'color': c, 'weight': 2, 'dashArray': '5, 5',
-						                                                  'fillOpacity': 0.2, 'fillColor': c},
-						               tooltip=f'无人机 {uid} 分配区域').add_to(fg)
+						                                                  'fillOpacity': 0.15, 'fillColor': c}
+						               ).add_to(fg)
+
+					# 2. 可视化实际覆盖范围 (实心填充，无边框)
+					if uav_res.get("coverage_area_geojson"):
+						folium.GeoJson(uav_res["coverage_area_geojson"],
+						               tooltip=f'无人机 {uid} 覆盖范围',
+						               style_function=lambda x, c=color: {'fillColor': c, 'fillOpacity': 0.4,
+						                                                  'color': 'transparent', 'weight': 0}
+						               ).add_to(fg)
+
+					# 3. 可视化飞行路径 (粗实线)
+					if uav_res.get("flight_path_geojson"):
+						folium.GeoJson(uav_res["flight_path_geojson"],
+						               tooltip=f'无人机 {uid} 飞行路径',
+						               style_function=lambda x, c=color: {'color': c, 'weight': 3, 'opacity': 0.9}
+						               ).add_to(fg)
+		# --- [修改结束] ---
 
 		folium.LayerControl(collapsed=False, position='topleft').add_to(m)
 		m.save(output_file)
@@ -127,23 +151,22 @@ def create_comprehensive_visualization(wuhan_boundary, uncovered_area,
 
 def main():
 	"""主函数 (集成通用规划器版)"""
-	print("� 武汉市卫星+无人机协同覆盖规划器 (v3.2 - 集成版)")
+	print("🛰️  武汉市卫星+无人机协同覆盖规划器 (v3.2 - 集成版)")
 	print("=" * 60)
 
 	# --- 步骤 1: 调用通用卫星规划器进行分析 ---
-	# 使用 get_valid_satellite_tle_as_dict 按需筛选卫星
 	tle_data = get_valid_satellite_tle_as_dict(satellite_db_path='data/satellite_data.db',
 	                                           mission_theme='Land cover',
 	                                           sensor_type='Optical Sensor')
 	wuhan_boundary = load_wuhan_boundary()
-	wuhan_geojson_path = "geojson/Wuhan.geojson"
+	wuhan_geojson_path = "data/Wuhan.geojson"
 
 	sat_plan_results = plan_satellite_observation(
 		target_geojson_path=wuhan_geojson_path,
 		tle_dict=tle_data,
 		start_time="2025-08-01 00:00:00.000",
 		end_time="2025-08-01 23:59:59.000",
-		target_coverage=0.99,
+		target_coverage=0.90,
 		fov=11.0,
 		interval_seconds=600,
 		output_dir="satellite_planning_output"
@@ -167,7 +190,6 @@ def main():
 
 	if total_coverage >= 0.99:
 		print(f"✅ 卫星覆盖率已达到 {total_coverage:.2%}，无需无人机补全。")
-		# (可视化并退出)
 		with open(sat_plan_results['intersection_geojson_path'], 'r', encoding='utf-8') as f:
 			covered_geojson = json.load(f)
 		satellite_plan_data = {
@@ -175,7 +197,7 @@ def main():
 			"intersection_footprints": covered_geojson['features']
 		}
 		create_comprehensive_visualization(
-			wuhan_boundary=wuhan_boundary, uncovered_area=None, completion_results=None,
+			wuhan_boundary=wuhan_boundary, uncovered_area={}, completion_results=None,
 			planning_mode="仅卫星", satellite_plan_data=satellite_plan_data,
 			output_file="final_coverage_map.html"
 		)
@@ -196,6 +218,15 @@ def main():
 
 	if uncovered_geom.is_empty:
 		print("✅ 计算后发现未覆盖区域为空，无需进行补全规划。")
+		with open(sat_plan_results['intersection_geojson_path'], 'r', encoding='utf-8') as f:
+			covered_geojson = json.load(f)
+		satellite_plan_data = {"is_optimal": is_optimal, "coverage_ratio": total_coverage,
+		                       "intersection_footprints": covered_geojson['features']}
+		create_comprehensive_visualization(
+			wuhan_boundary=wuhan_boundary, uncovered_area={}, completion_results=None,
+			planning_mode="仅卫星", satellite_plan_data=satellite_plan_data,
+			output_file="final_coverage_map.html"
+		)
 		return
 
 	# --- 步骤 3: 调用无人机补全规划 ---
@@ -222,6 +253,8 @@ def main():
 	# --- 步骤 4: 处理结果并生成最终的综合地图 ---
 	if completion_results:
 		print(f"\n🎉 补全规划成功！详细结果保存在 '{OUTPUT_DIR}' 文件夹中。")
+		with open(sat_plan_results['intersection_geojson_path'], 'r', encoding='utf-8') as f:
+			covered_geojson = json.load(f)
 		planning_mode = "空地协同" if completion_results.get("ground_station_contribution", {}).get("station_count",
 		                                                                                        0) > 0 else "纯无人机"
 

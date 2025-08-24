@@ -1,45 +1,45 @@
+# -*- coding: utf-8 -*-
+"""
+PROJECT_NAME: GeoSensingAPI
+FILE_NAME: DOCI
+AUTHOR: welt
+E_MAIL: tjlwelt@foxmail.com
+DATE: 2025-08-23
+REVISION_NOTES: 重构为从外部数据库和场景文件读取数据。
+                修改 calculate_doci_from_database 函数，使其返回JSON而不是打印。
+                新增逻辑，只返回得分大于0的结果。
+                修改函数签名，直接接收场景配置字典。
+                修改GeoJSON加载方式，从路径读取。
+                修改主程序测试块，使用明文（字典）输入代替文件加载。
+"""
+
 import json
 import numpy as np
+import sqlite3
+import pandas as pd
+from typing import Dict, Any
 
-# 导入您已经写好的函数
-from satelliteTool.get_observation_lace import get_coverage_lace
+
+# 假设 satelliteTool 已安装或在PYTHONPATH中
 from satelliteTool.get_observation_overlap import get_observation_overlap
 
-
 # =============================================================================
-# PART 2: DOCI SUB-CAPABILITIES FRAMEWORK
+# PART 1: DOCI SUB-CAPABILITIES FRAMEWORK
 # =============================================================================
 
-def get_theme_relevance_from_oscar(sensor_name, task_theme):
-	"""模拟查询OSCAR数据库以获取专题相关性。"""
-	print(f"  - 正在模拟查询 Theme (Th)...")
-	# 根据传感器名称和任务主题返回相关性
-	theme_mapping = {
-		'LANDSAT': 'high',
-		'SENTINEL': 'high', 
-		'GAOFEN': 'medium',
-		'ZY': 'medium',
-		'HJ': 'useful'
-	}
-	
-	for key, value in theme_mapping.items():
-		if key in sensor_name.upper():
-			relevance = value
-			break
-	else:
-		relevance = 'medium'  # 默认值
-		
-	print(f"    * Theme Relevance = '{relevance}'")
-	return relevance
-
-
-def get_cloudiness_from_owm(target_geojson, task_period):
-	"""模拟查询天气服务以获取云量预报。"""
-	print(f"  - 正在模拟查询 Radiation (Ra)...")
-	# 模拟8月份武汉地区的云量情况
-	cloudiness = 0.25  # 示例值：25%的云量（8月份多云天气）
-	print(f"    * Cloudiness = {cloudiness:.2%}")
-	return cloudiness
+def get_theme_relevance_from_oscar(sensor_name, task_theme, mission_themes_str):
+	"""根据数据库中的任务主题模拟查询相关性。"""
+	try:
+		# 确保正确处理可能存在的None或非字符串类型
+		if not isinstance(mission_themes_str, str):
+			return 'medium'
+		themes = json.loads(mission_themes_str.replace("'", "\""))
+		if any(task_theme.lower() in t.lower() for t in themes):
+			return 'high'
+		else:
+			return 'medium'
+	except (json.JSONDecodeError, TypeError):
+		return 'medium'  # 默认值
 
 
 def calculate_theme(relevance):
@@ -57,7 +57,6 @@ def calculate_accuracy(sensor_quantization, max_quantization):
 
 
 def calculate_spacetime(sensor_attrs, task_reqs, weights):
-	print(f"  - 正在计算 SpaceTime (ST)...")
 	indicators = ['spatial_res', 'temporal_res']
 	grades = np.array([1.0, 0.5, 0.1])
 	R = np.zeros((2, 3))
@@ -88,103 +87,53 @@ def calculate_spacetime(sensor_attrs, task_reqs, weights):
 	W = np.array(weights)
 	B = W @ R
 	space_time_value = np.sum(B * grades)
-	print(f"    * SpaceTime (ST) = {space_time_value:.3f}")
 	return space_time_value
 
 
 # =============================================================================
-# PART 3: MAIN DOCI CALCULATION ORCHESTRATOR
+# PART 2: MAIN DOCI CALCULATION ORCHESTRATOR
 # =============================================================================
-
-def calculate_doci_for_task(sensor_properties, task_requirements, all_sensors):
-	"""
-	为单个传感器和单个任务计算完整的DOCI及其所有子能力。
-	"""
+def calculate_doci_for_task(sensor_properties: Dict, task_requirements: Dict, all_sensors: Dict) -> Dict:
+	"""为单个传感器和单个任务计算完整的DOCI及其所有子能力。"""
 	name = sensor_properties['name']
-	print(f"\n-> 正在为传感器 '{name}' 评估任务 '{task_requirements['description']}'...")
 
-	# 1. Co: Coverage - 使用get_observation_lace获取卫星足迹，然后计算覆盖率
-	print("  - 正在计算 Coverage (Co)...")
-	
-	# 构建TLE字典格式
 	tle_dict = {name: sensor_properties['tle_str']}
-	
-	# 首先使用get_observation_lace获取卫星足迹
-	coverage_dict = get_coverage_lace(
-		tle_dict=tle_dict,
-		start_time_str=task_requirements['start_time'],
-		end_time_str=task_requirements['end_time'],
-		fov=sensor_properties['fov'],
-		interval_seconds=600  # 10分钟间隔
-	)
-	
-	# 然后使用get_observation_overlap计算覆盖率
+
 	overlap_results = get_observation_overlap(
 		tle_dict=tle_dict,
 		start_time_str=task_requirements['start_time'],
 		end_time_str=task_requirements['end_time'],
-		target_geojson=task_requirements['geojson_area'],
+		target_geojson_path=task_requirements['geojson_path'],
 		fov=sensor_properties['fov'],
-		interval_seconds=600  # 10分钟间隔
+		interval_seconds=600
 	)
-	
-	# 获取覆盖率
-	if name in overlap_results:
-		Co = overlap_results[name]['coverage_ratio']
-		intersection_footprint_count = len(overlap_results[name]['intersection_footprints'])
-		print(f"    * Coverage (Co) = {Co:.3f}")
-		print(f"    * 与研究区域相交的足迹数量: {intersection_footprint_count}")
-	else:
-		Co = 0.0
-		print(f"    * Coverage (Co) = {Co:.3f}")
-		print(f"    * 未生成有效足迹点")
-	
-	# 获取该卫星的足迹数量
-	if name in coverage_dict and coverage_dict[name]['features']:
-		footprint_count = len(coverage_dict[name]['features'])
-		print(f"    * 总足迹数量: {footprint_count}")
-	else:
-		print(f"    * 总足迹数量: 0")
 
-	# 2. Th: Theme
-	relevance = get_theme_relevance_from_oscar(name, task_requirements['theme'])
+	Co = overlap_results.get(name, {}).get('coverage_ratio', 0.0)
+
+	relevance = get_theme_relevance_from_oscar(name, task_requirements['theme'],
+	                                           sensor_properties.get('mission_themes', ''))
 	Th = calculate_theme(relevance)
 
-	# 3. Ra: Radiation
-	cloudiness = get_cloudiness_from_owm(task_requirements['geojson_area'], task_requirements['start_time'])
+	cloudiness = task_requirements['cloudiness_forecast']
 	Ra = calculate_radiation(cloudiness)
 
 	if Co <= 0 or Th == 0 or Ra == 0:
-		print(f"   ! 传感器 '{name}' 的先决条件不满足 (Co={Co:.2f}, Th={Th:.2f}, Ra={Ra:.2f})，DOCI=0")
 		return {'Co': Co, 'Th': Th, 'Ra': Ra, 'ST': 0, 'Ac': 0, 'DOCI': 0}
 
-	# 4. ST: SpaceTime
 	ST = calculate_spacetime(sensor_properties, task_requirements['requirements'], task_requirements['ahp_weights'])
 
-	# 5. Ac: Accuracy
-	print(f"  - 正在计算 Accuracy (Ac)...")
-	max_q = max(s['quantization_level'] for s in all_sensors.values())
+	max_q = max(s['quantization_level'] for s in all_sensors.values() if 'quantization_level' in s) if all_sensors else \
+		sensor_properties['quantization_level']
 	Ac = calculate_accuracy(sensor_properties['quantization_level'], max_q)
-	print(f"    * Accuracy (Ac) = {Ac:.3f}")
 
-	# 最终DOCI计算
 	doci_value = 0.25 * ((Co + ST) + (Th + Ra) * Ac)
-
 	results = {'Co': Co, 'Th': Th, 'Ra': Ra, 'ST': ST, 'Ac': Ac, 'DOCI': doci_value}
-	print(f"   * DOCI for '{name}' = {doci_value:.3f}")
 	return results
 
 
 def calculate_doci_for_all_sensors(sensors_data, task_requirements):
-	"""
-	为所有传感器计算DOCI值
-	"""
-	print("=" * 80)
-	print("开始计算所有传感器的DOCI值")
-	print("=" * 80)
-	
+	"""为所有传感器计算DOCI值"""
 	results = {}
-	
 	for sensor_name, sensor_props in sensors_data.items():
 		try:
 			result = calculate_doci_for_task(sensor_props, task_requirements, sensors_data)
@@ -192,126 +141,124 @@ def calculate_doci_for_all_sensors(sensors_data, task_requirements):
 		except Exception as e:
 			print(f"计算传感器 '{sensor_name}' 的DOCI时出错: {e}")
 			results[sensor_name] = {'Co': 0, 'Th': 0, 'Ra': 0, 'ST': 0, 'Ac': 0, 'DOCI': 0}
-	
 	return results
 
 
 # =============================================================================
-# PART 4: EXAMPLE USAGE
+# PART 3: MAIN EXECUTION
 # =============================================================================
 
-if __name__ == '__main__':
-	# 加载TLE数据
-	with open('satelliteTool/tle_data.json', 'r', encoding='utf-8') as f:
-		tle_data = json.load(f)
-	
-	# 定义传感器属性
-	sensors_data = {}
-	for name, tle_str in tle_data.items():
-		# 根据卫星类型设置不同的属性
-		if 'LANDSAT' in name:
-			spatial_res = 30  # 30米空间分辨率
-			temporal_res = 16  # 16天重访周期
-			quantization = 12  # 12位量化
-			fov = 15.0  # 15度视场角
-		elif 'SENTINEL' in name:
-			spatial_res = 10  # 10米空间分辨率
-			temporal_res = 5   # 5天重访周期
-			quantization = 12  # 12位量化
-			fov = 20.0  # 20度视场角
-		elif 'GAOFEN' in name:
-			spatial_res = 8    # 8米空间分辨率
-			temporal_res = 4   # 4天重访周期
-			quantization = 10  # 10位量化
-			fov = 25.0  # 25度视场角
-		elif 'ZY' in name:
-			spatial_res = 5    # 5米空间分辨率
-			temporal_res = 3   # 3天重访周期
-			quantization = 10  # 10位量化
-			fov = 30.0  # 30度视场角
-		elif 'HJ' in name:
-			spatial_res = 30   # 30米空间分辨率
-			temporal_res = 4   # 4天重访周期
-			quantization = 8   # 8位量化
-			fov = 35.0  # 35度视场角
-		else:
-			spatial_res = 20   # 默认值
-			temporal_res = 10  # 默认值
-			quantization = 10  # 默认值
-			fov = 20.0  # 默认值
-		
-		sensors_data[name] = {
-			'name': name,
-			'tle_str': tle_str,
-			'spatial_res': spatial_res,
-			'temporal_res': temporal_res,
-			'quantization_level': quantization,
-			'fov': fov
+def calculate_doci_from_database(db_path: str, scenario_config: dict) -> str:
+	"""
+	从数据库加载数据，根据传入的场景配置执行DOCI评估，并以JSON格式返回结果。
+	"""
+	try:
+		# 1. 直接使用传入的场景配置字典
+		doci_config = scenario_config['models']['doci']
+
+		# 从文件路径加载GeoJSON
+		geojson_path = scenario_config['target_area_geojson_path']
+
+		task_reqs = {
+			'description': scenario_config['description'],
+			'theme': doci_config['theme'],
+			'start_time': scenario_config['time_window']['start'],
+			'end_time': scenario_config['time_window']['end'],
+			'geojson_path': geojson_path,  # 使用加载的GeoJSON数据
+			'cloudiness_forecast': scenario_config['environment']['cloudiness_forecast'],
+			'requirements': doci_config['requirements'],
+			'ahp_weights': doci_config['ahp_weights']
 		}
-	
-	# 定义任务需求（武汉市区域）
-	wuhan_geojson = {
-		"type": "FeatureCollection",
-		"features": [{
-			"type": "Feature",
-			"properties": {},
-			"geometry": {
-				"type": "Polygon",
-				"coordinates": [[
-					[114.0, 30.0],
-					[114.8, 30.0],
-					[114.8, 30.8],
-					[114.0, 30.8],
-					[114.0, 30.0]
-				]]
+
+		# 2. 从数据库查询传感器数据
+		con = sqlite3.connect(db_path)
+		df_sensors = pd.read_sql_query(
+			"SELECT name, tle, spatial_resolution_m, temporal_resolution_days, quantization_bits, fov_deg, mission_themes FROM sensors",
+			con)
+		con.close()
+
+		df_sensors.dropna(subset=['tle', 'quantization_bits', 'fov_deg'], inplace=True)
+
+		sensors_data = {}
+		for _, row in df_sensors.iterrows():
+			sensors_data[row['name']] = {
+				'name': row['name'],
+				'tle_str': row['tle'],
+				'spatial_res': row['spatial_resolution_m'],
+				'temporal_res': row['temporal_resolution_days'],
+				'quantization_level': row['quantization_bits'],
+				'fov': row['fov_deg'],
+				'mission_themes': row['mission_themes']
 			}
-		}]
-	}
-	
-	task_requirements = {
-		'description': '武汉市区域环境监测任务',
-		'theme': 'environmental_monitoring',
-		'start_time': '2025-08-05 00:00:00.000',
-		'end_time': '2025-08-10 23:59:59.000',
-		'geojson_area': wuhan_geojson,
-		'requirements': {
-			'spatial_res': (30, 20, 10),  # (threshold, baseline, goal)
-			'temporal_res': (10, 5, 2)     # (threshold, baseline, goal)
+
+		# 3. 执行计算
+		results = calculate_doci_for_all_sensors(sensors_data, task_reqs)
+
+		# 4. 排序并格式化为JSON
+		if not results:
+			raise ValueError("未能计算出任何有效结果。")
+
+		sorted_results = sorted(results.items(), key=lambda x: x[1]['DOCI'], reverse=True)
+
+		# 5. 过滤并重新排名
+		positive_results = [item for item in sorted_results if item[1]["DOCI"] > 0]
+
+		ranked_sensors = []
+		for rank, (sensor_name, result) in enumerate(positive_results):
+			result_data = {
+				"rank": rank + 1,
+				"name": sensor_name,
+				"components": result
+			}
+			ranked_sensors.append(result_data)
+
+		result_json = {
+			"status": "success",
+			"scenario": scenario_config.get('description', 'Custom Scenario'),
+			"model": "DOCI",
+			"description": doci_config.get('description', ''),
+			"results": ranked_sensors
+		}
+		return json.dumps(result_json, indent=4, ensure_ascii=False)
+
+	except Exception as e:
+		error_json = {
+			"status": "error",
+			"scenario": scenario_config.get('description', 'Custom Scenario'),
+			"model": "DOCI",
+			"message": str(e)
+		}
+		return json.dumps(error_json, indent=4, ensure_ascii=False)
+
+
+if __name__ == '__main__':
+	# --- 主程序测试块 ---
+	db_file_path = "D:\\GeoSensingAPI\\data\\sensors_enriched.db"
+
+	# 直接在此处定义场景配置字典
+	doci_scenario_config = {
+		"description": "针对武汉市汛期灾害的遥感监测需求，重点评估传感器的水体识别与覆盖能力。",
+		"time_window": {
+			"start": "2025-08-01 00:00:00.000",
+			"end": "2025-08-01 23:59:59.000"
 		},
-		'ahp_weights': [0.6, 0.4]  # 空间分辨率权重0.6，时间分辨率权重0.4
+		"target_area_geojson_path": "D:\\GeoSensingAPI\\data\\Wuhan.geojson",
+		"environment": {
+			"cloudiness_forecast": 0.45
+		},
+		"models": {
+			"doci": {
+				"description": "DOCI模型侧重于时空覆盖、主题相关性、辐射质量和精度。",
+				"theme": "Disaster Monitoring",
+				"requirements": {
+					"spatial_res": [50, 20, 5],
+					"temporal_res": [5, 2, 1]
+				},
+				"ahp_weights": [0.7, 0.3]
+			}
+		}
 	}
-	
-	print("武汉市DOCI计算示例")
-	print(f"时间窗口: {task_requirements['start_time']} 到 {task_requirements['end_time']}")
-	print(f"目标区域: 武汉市 ({wuhan_geojson['features'][0]['geometry']['coordinates'][0][0][0]:.1f}°E, {wuhan_geojson['features'][0]['geometry']['coordinates'][0][0][1]:.1f}°N)")
-	print(f"传感器数量: {len(sensors_data)}")
-	print()
-	
-	# 计算所有传感器的DOCI值
-	results = calculate_doci_for_all_sensors(sensors_data, task_requirements)
-	
-	# 按DOCI值排序并显示结果
-	print("\n" + "=" * 80)
-	print("DOCI计算结果汇总（按DOCI值降序排列）")
-	print("=" * 80)
-	
-	sorted_results = sorted(results.items(), key=lambda x: x[1]['DOCI'], reverse=True)
-	
-	print(f"{'传感器名称':<20} {'覆盖率(Co)':<10} {'专题性(Th)':<10} {'辐射性(Ra)':<10} {'时空性(ST)':<10} {'精度性(Ac)':<10} {'DOCI':<10}")
-	print("-" * 90)
-	
-	for sensor_name, result in sorted_results:
-		print(f"{sensor_name:<20} {result['Co']:<10.3f} {result['Th']:<10.3f} {result['Ra']:<10.3f} {result['ST']:<10.3f} {result['Ac']:<10.3f} {result['DOCI']:<10.3f}")
-	
-	# 保存结果到文件
-	output_file = 'wuhan_doci_results_2025-08-05_to_08-10.json'
-	with open(output_file, 'w', encoding='utf-8') as f:
-		json.dump(results, f, ensure_ascii=False, indent=2)
-	
-	print(f"\n✅ 结果已保存到文件: {output_file}")
-	
-	# 显示最佳传感器
-	best_sensor = sorted_results[0]
-	print(f"\n🏆 最佳传感器: {best_sensor[0]} (DOCI = {best_sensor[1]['DOCI']:.3f})")
-	print(f"   该传感器在指定时间窗口内对武汉市的覆盖能力最强")
-	
+
+	json_output = calculate_doci_from_database(db_path=db_file_path,
+	                                           scenario_config=doci_scenario_config)
+	print(json_output)

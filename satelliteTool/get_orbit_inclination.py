@@ -2,6 +2,13 @@ from skyfield.api import EarthSatellite, load
 
 
 def get_orbit_inclination(*args, multiInvocation: bool = False, times: int = 1):
+    """
+
+    :param args:
+    :param multiInvocation:
+    :param times:
+    :return:
+    """
     ts = load.timescale()
 
     def calculate_inclination(tle_data):
