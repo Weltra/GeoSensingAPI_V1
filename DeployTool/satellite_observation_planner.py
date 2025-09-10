@@ -1,320 +1,298 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
+
 """
-通用卫星观测规划器
-功能: 根据指定的观测区域、卫星数据和时间范围，规划最优的卫星覆盖方案。
+通用卫星观测规划器 (v4 - 模块化版)
+
+此版本将复杂的规划流程拆分为一个清晰的、按顺序执行的工具链。
+核心的数据获取与轨迹计算函数已移至外部模块，本脚本专注于最终的方案规划与评估。
+
+工具链流程:
+1. `get_valid_satellite_tle_as_dict` (from satelliteTool): 从数据库获取基础的卫星TLE数据。
+2. `get_observation_overlap` (from satelliteTool): (核心计算) 接收TLE数据，计算每个卫星与
+   目标区域的精确覆盖率，并输出中间结果文件。
+3. `plan_satellite_combination` (local): 接收上一步的计算结果，寻找最优的单星或多星组合方案，
+   并生成最终的报告、地图和汇总文件。
+
+主函数 (`main`) 负责按顺序调用这些工具，并将上一步的输出作为下一步的输入。
 """
 
 import json
+import os
 from datetime import datetime
 from itertools import combinations
-import os
 
-# 导入必要的地理信息处理库
-from shapely.geometry import shape, mapping
-from shapely.ops import unary_union, transform
-from pyproj import Proj, Transformer
 import folium
+import geojson
+from pyproj import Proj, Transformer
+from shapely.geometry import shape, mapping, Polygon, MultiPolygon
+from shapely.ops import unary_union, transform
+from shapely.validation import make_valid
 
-# 导入您已经写好的工具函数
-# 确保这些工具函数所在的目录在Python的搜索路径中
-# !/usr/bin/env python3
-# -*- coding: utf-8 -*-
+# ==============================================================================
+# 导入外部工具函数
+# ==============================================================================
 from satelliteTool.find_Satellite import get_valid_satellite_tle_as_dict
-
-"""
-通用卫星观测规划器 (v2 - 增加'尽力而为'的最佳方案返回)
-功能: 根据指定的观测区域、卫星数据和时间范围，规划最优的卫星覆盖方案。
-"""
-
-import json
-from datetime import datetime
-from itertools import combinations
-import os
-
-from shapely.geometry import shape, mapping
-from shapely.ops import unary_union, transform
-from pyproj import Proj, Transformer
-import folium
-
-from satelliteTool.get_observation_lace import get_coverage_lace
 from satelliteTool.get_observation_overlap import get_observation_overlap
 
 
-def plan_satellite_observation(
-		target_geojson_path,
-		tle_dict,
-		start_time,
-		end_time,
-		target_coverage=0.9,
-		fov=20.0,
-		interval_seconds=600,
-		output_dir="planning_results"
-):
+# ==============================================================================
+# 本地辅助函数
+# ==============================================================================
+def split_antimeridian(geom):
 	"""
-	一个通用的卫星观测规划函数 (v2)。
-	如果找不到满足目标的方案，会返回一个由所有相交卫星组成的'尽力而为'方案。
+	分割跨越180度经线（国际日期变更线）的几何图形。
 	"""
-	# ... (步骤 0 到 3 的代码保持不变) ...
-	print("=" * 60)
-	print("🚀 通用卫星观测规划器开始运行 🚀")
-	print("=" * 60)
+	if not isinstance(geom, Polygon) or geom.bounds[2] - geom.bounds[0] < 180:
+		return geom
+	cutter = Polygon([(-180, -90), (-180, 90), (0, 90), (0, -90), (-180, -90)])
+	parts = [geom.intersection(cutter)]
+	diffed = geom.difference(cutter)
+	if not diffed.is_empty:
+		parts.append(transform(lambda x, y, z=None: (x - 360, y), diffed))
+	return MultiPolygon([p for p in parts if not p.is_empty])
 
-	# --- 步骤 0: 准备工作 ---
-	if not os.path.exists(output_dir):
-		os.makedirs(output_dir)
-		print(f"创建输出目录: {output_dir}")
+
+def plan_satellite_combination(
+		coverage_results: dict,
+		target_geojson_path: str,
+		target_coverage: float,
+		output_dir: str
+) -> dict:
+	"""
+	根据预先计算好的覆盖率数据，规划最优方案并生成报告、地图。
+	"""
+	print("\n" + "=" * 60)
+	print(" C. 卫星观测方案规划与评估 ".center(60))
+	print("=" * 60)
+	print(f"\n[1/3] 正在准备规划环境...")
+
+	area_name = os.path.basename(target_geojson_path).split('.')[0]
+	os.makedirs(output_dir, exist_ok=True)
 
 	try:
+		# 确保使用 utf-8 编码读取文件
 		with open(target_geojson_path, 'r', encoding='utf-8') as f:
-			target_geojson = json.load(f)
-		area_name = os.path.basename(target_geojson_path).split('.')[0]
-		print(f"✅ 成功加载观测区域: {area_name}")
+			target_geojson_obj = json.load(f)
+		target_shape = unary_union([make_valid(shape(f['geometry'])) for f in target_geojson_obj.get('features', [])])
 	except Exception as e:
 		print(f"❌ 加载观测区域GeoJSON失败: {e}")
 		return {'success': False, 'message': 'Failed to load target GeoJSON.'}
 
-	# --- 步骤 1: 获取所有卫星的覆盖足迹 (粗筛) ---
-	print(f"\n[1/5] 正在获取卫星覆盖足迹 (时间: {start_time} 到 {end_time})...")
-	try:
-		coverage_dict = get_coverage_lace(
-			tle_dict=tle_dict, start_time_str=start_time, end_time_str=end_time,
-			fov=fov, interval_seconds=interval_seconds
-		)
-		total_features = sum(len(geojson.get('features', [])) for geojson in coverage_dict.values())
-		print(f"✅ 成功生成 {total_features} 个足迹点，涉及 {len(coverage_dict)} 颗卫星")
-	except Exception as e:
-		print(f"❌ 获取卫星足迹失败: {e}")
-		return {'success': False, 'message': f'Failed to get satellite footprints: {e}'}
-
-	# --- 步骤 2: 筛选与观测区域相交的卫星 ---
-	print("\n[2/5] 正在筛选与观测区域相交的卫星...")
-	try:
-		valid_target_geoms = []
-		for feature in target_geojson.get('features', []):
-			geom_json = feature.get('geometry')
-			if geom_json:
-				geom = shape(geom_json)
-				if not geom.is_valid: geom = geom.buffer(0)
-				if geom.is_valid and not geom.is_empty: valid_target_geoms.append(geom)
-		if not valid_target_geoms: raise ValueError("目标GeoJSON中没有有效的几何对象")
-		target_shape = unary_union(valid_target_geoms)
-
-		intersecting_satellites = []
-		for satellite_name, satellite_geojson in coverage_dict.items():
-			valid_sat_geoms = []
-			for feature in satellite_geojson.get('features', []):
-				geom_json = feature.get('geometry')
-				if geom_json:
-					geom = shape(geom_json)
-					if not geom.is_valid: geom = geom.buffer(0)
-					if geom.is_valid and not geom.is_empty: valid_sat_geoms.append(geom)
-			if not valid_sat_geoms: continue
-			satellite_shape = unary_union(valid_sat_geoms)
-			if target_shape.intersects(satellite_shape):
-				intersecting_satellites.append(satellite_name)
-
-		print(f"✅ 筛选完成，找到 {len(intersecting_satellites)} 颗相交卫星: {intersecting_satellites}")
-		if not intersecting_satellites:
-			print("❌ 未找到与目标区域相交的卫星，规划结束。")
-			return {'success': False, 'message': 'No intersecting satellites found.',
-			        'report': {'optimal_plan': None, 'best_effort_plan': None}}
-	except Exception as e:
-		print(f"❌ 在筛选卫星时发生错误: {e}")
-		return {'success': False, 'message': f'Error during intersection check: {e}'}
-
-	# --- 步骤 3: 精确计算每个相交卫星的覆盖率 ---
-	print(f"\n[3/5] 正在精确计算卫星覆盖率...")
-	filtered_tle_dict = {name: tle_dict[name] for name in intersecting_satellites}
-	try:
-		coverage_results = get_observation_overlap(
-			tle_dict=filtered_tle_dict, start_time_str=start_time, end_time_str=end_time,
-			target_geojson=target_geojson, fov=fov, interval_seconds=interval_seconds
-		)
-		print(f"✅ 覆盖率计算完成:")
-		for satellite, data in coverage_results.items():
-			print(f"   - {satellite}: 覆盖率 {data['coverage_ratio']:.2%}")
-	except Exception as e:
-		print(f"❌ 计算覆盖率失败: {e}")
-		return {'success': False, 'message': f'Failed to calculate coverage overlap: {e}'}
-
-	# --- 步骤 4: 寻找最优覆盖方案 ---
-	print(f"\n[4/5] 正在寻找最优覆盖方案 (目标: {target_coverage:.0%})...")
+	print(f"\n[2/3] 正在寻找最优覆盖方案 (目标: {target_coverage:.0%})...")
 	wgs84_proj = Proj('epsg:4326')
 	equal_area_proj = Proj('+proj=moll')
 	transformer = Transformer.from_proj(wgs84_proj, equal_area_proj, always_xy=True)
 	target_area = transform(transformer.transform, target_shape).area
 
-	optimal_plan = None
-	best_effort_plan = None
+	preloaded_geometries = {}
+	for sat, data in coverage_results.items():
+		path = data.get('intersection_footprints_path')
+		if path and os.path.exists(path):
+			try:
+				with open(path, 'r', encoding='utf-8') as f:
+					geo_data = json.load(f)
+				# 读取该卫星的所有足迹并合并为一个几何对象
+				footprints = [make_valid(shape(feat['geometry'])) for feat in geo_data.get('features', []) if
+				              feat.get('geometry')]
+				if footprints:
+					preloaded_geometries[sat] = unary_union(footprints)
+			except Exception as e:
+				print(f"   - 警告: 预加载卫星 '{sat}' 的数据失败: {e}")
 
-	# 寻找满足目标的最优方案
-	# ... (代码与之前版本相同) ...
-	for satellite, data in coverage_results.items():
+	optimal_plan, best_effort_plan = None, None
+
+	# 检查单星方案
+	for sat, data in coverage_results.items():
 		if data['coverage_ratio'] >= target_coverage:
-			optimal_plan = {'type': 'single', 'satellites': [satellite], 'coverage': data['coverage_ratio']}
-			print(f"✅ 找到单个卫星解决方案: {satellite} (覆盖率: {data['coverage_ratio']:.2%})")
+			optimal_plan = {'type': 'single', 'satellites': [sat], 'coverage': data['coverage_ratio']}
+			print(f"✅ 找到单个卫星解决方案: {sat} (覆盖率: {data['coverage_ratio']:.2%})")
 			break
+
+	# 检查组合方案 (使用预加载的数据)
 	if not optimal_plan:
-		sorted_satellites = sorted(coverage_results.keys(), key=lambda s: coverage_results[s]['coverage_ratio'],
-		                           reverse=True)
-		for combo_size in range(2, min(6, len(sorted_satellites) + 1)):
-			for combo in combinations(sorted_satellites, combo_size):
-				# ... (组合计算逻辑与之前版本相同) ...
-				footprints = [shape(f['geometry']) for s in combo for f in
-				              coverage_results[s]['intersection_footprints'] if f.get('geometry')]
-				if not footprints: continue
-				valid_footprints = [fp.buffer(0) if not fp.is_valid else fp for fp in footprints]
-				valid_footprints = [fp for fp in valid_footprints if fp.is_valid and not fp.is_empty]
-				if not valid_footprints: continue
-				merged_footprints = unary_union(valid_footprints)
-				projected_merged = transform(transformer.transform, merged_footprints)
-				combo_coverage = projected_merged.area / target_area
+		# 使用已成功预加载数据的卫星进行组合
+		available_sats = list(preloaded_geometries.keys())
+		sorted_sats = sorted(available_sats, key=lambda s: coverage_results[s]['coverage_ratio'], reverse=True)
+
+		for combo_size in range(2, min(6, len(sorted_sats) + 1)):
+			print(f"   - 正在检查 {combo_size} 颗卫星的组合...")
+			for combo in combinations(sorted_sats, combo_size):
+				# 从预加载的字典中获取几何对象，而不是从文件中反复读取
+				footprints_to_merge = [preloaded_geometries[s] for s in combo if s in preloaded_geometries]
+				if not footprints_to_merge: continue
+
+				# 正确的计算方式：合并这个组合中所有卫星的几何对象
+				merged_fp = unary_union(footprints_to_merge)
+				combo_coverage = min(1.0, transform(transformer.transform, merged_fp).area / target_area)
+
 				if combo_coverage >= target_coverage:
 					optimal_plan = {'type': 'combination', 'satellites': list(combo), 'coverage': combo_coverage}
 					print(f"✅ 找到最佳组合方案: {list(combo)} (覆盖率: {combo_coverage:.2%})")
 					break
 			if optimal_plan: break
 
-	# --- START of MODIFICATION ---
-	# 如果没有找到最优方案，则计算一个“尽力而为”的最佳方案
+	# “尽力而为”方案 (同样使用预加载的数据)
 	if not optimal_plan:
 		print("   未能找到满足目标的方案，正在计算'尽力而为'的最佳方案...")
-		all_sats = list(coverage_results.keys())
-		all_footprints = [shape(f['geometry']) for s in all_sats for f in coverage_results[s]['intersection_footprints']
-		                  if f.get('geometry')]
+		all_sats = list(preloaded_geometries.keys())
+		if all_sats:
+			# 直接合并所有已预加载的几何对象，效率更高
+			all_footprints_geom = list(preloaded_geometries.values())
+			merged_all = unary_union(all_footprints_geom)
+			best_effort_coverage = min(1.0, transform(transformer.transform, merged_all).area / target_area)
+			best_effort_plan = {
+				'type': 'best_effort_combination', 'satellites': all_sats, 'coverage': best_effort_coverage
+			}
+			print(f"   ✅ '尽力而为'方案计算完成，合并所有卫星可达覆盖率: {best_effort_coverage:.2%}")
 
-		if all_footprints:
-			valid_footprints = [fp.buffer(0) if not fp.is_valid else fp for fp in all_footprints]
-			valid_footprints = [fp for fp in valid_footprints if fp.is_valid and not fp.is_empty]
-
-			if valid_footprints:
-				merged_all = unary_union(valid_footprints)
-				projected_all = transform(transformer.transform, merged_all)
-				best_effort_coverage = projected_all.area / target_area
-				best_effort_plan = {
-					'type': 'best_effort_combination',
-					'satellites': all_sats,
-					'coverage': best_effort_coverage
-				}
-				print(f"   ✅ '尽力而为'方案计算完成，合并所有卫星可达覆盖率: {best_effort_coverage:.2%}")
-
-	# --- END of MODIFICATION ---
-
-	# --- 步骤 5: 生成报告、地图和交集文件 ---
-	print("\n[5/5] 正在生成最终结果...")
+	print("\n[3/3] 正在生成最终结果...")
 	plan_to_use = optimal_plan or best_effort_plan
 
-	report = {
-		'planning_period': {'start_time': start_time, 'end_time': end_time},
-		'target_area_path': target_geojson_path,
-		'target_coverage_goal': target_coverage,
-		'intersecting_satellites_count': len(intersecting_satellites),
-		'coverage_by_satellite': {k: v['coverage_ratio'] for k, v in coverage_results.items()},
-		'optimal_plan': optimal_plan,  # 如果成功则有值，否则为None
-		'best_effort_plan': best_effort_plan,  # 如果失败则有值，否则为None
-		'generation_time': datetime.now().isoformat()
-	}
-	# ... (报告、地图、交集文件的生成逻辑与之前版本类似, 但使用 plan_to_use) ...
+	# 生成报告
+	report = {'target_area_path': target_geojson_path, 'target_coverage_goal': target_coverage,
+	          'coverage_by_satellite': {k: v['coverage_ratio'] for k, v in coverage_results.items()},
+	          'optimal_plan': optimal_plan, 'best_effort_plan': best_effort_plan,
+	          'generation_time': datetime.now().isoformat()}
 	report_path = os.path.join(output_dir, f"{area_name}_planning_report.json")
 	with open(report_path, 'w', encoding='utf-8') as f:
 		json.dump(report, f, ensure_ascii=False, indent=2)
 	print(f"✅ 规划报告已保存到: {report_path}")
 
+	# 生成地图
 	m = folium.Map(location=[30.4, 114.4], zoom_start=7, tiles="CartoDB positron")
-	folium.GeoJson(target_geojson, name=f'观测区域: {area_name}',
+	# --- FIX: 使用已加载的 geojson 对象而非文件路径，以避免编码错误 ---
+	folium.GeoJson(target_geojson_obj, name=f'观测区域: {area_name}',
 	               style_function=lambda x: {'color': 'black', 'weight': 3, 'fillOpacity': 0.1}).add_to(m)
+	# ---
 	colors = ['#e6194b', '#3cb44b', '#ffe119', '#4363d8', '#f58231', '#911eb4', '#46f0f0']
 	sorted_results = sorted(coverage_results.items(), key=lambda item: item[1]['coverage_ratio'], reverse=True)
 	for i, (sat_name, data) in enumerate(sorted_results):
-		if data.get('intersection_footprints'):
-			layer_name = f"{sat_name} ({data['coverage_ratio']:.1%})"
-			sat_layer = folium.FeatureGroup(name=layer_name, show=True)
-			color = colors[i % len(colors)]
+		path = data.get('intersection_footprints_path')
+		if path and os.path.exists(path):
 			folium.GeoJson(
-				{"type": "FeatureCollection", "features": data['intersection_footprints']},
-				style_function=lambda x, c=color: {'weight': 0, 'fillColor': c, 'fillOpacity': 0.35},
+				path, name=f"{sat_name} ({data['coverage_ratio']:.1%})",
+				style_function=lambda x, c=colors[i % len(colors)]: {'weight': 0, 'fillColor': c, 'fillOpacity': 0.35},
 				tooltip=f"<b>{sat_name}</b><br>覆盖率: {data['coverage_ratio']:.2%}"
-			).add_to(sat_layer)
-			sat_layer.add_to(m)
+			).add_to(m)
 	folium.LayerControl(collapsed=False).add_to(m)
 	map_path = os.path.join(output_dir, f"{area_name}_coverage_map.html")
 	m.save(map_path)
 	print(f"✅ 可视化地图已保存到: {map_path}")
 
-	intersection_geojson = {"type": "FeatureCollection", "features": []}
+	# 生成最终交集文件
+	intersection_path = None
 	if plan_to_use:
-		sats_in_plan = plan_to_use['satellites']
-		final_footprints_geom = [shape(f['geometry']) for s in sats_in_plan for f in
-		                         coverage_results[s]['intersection_footprints'] if f.get('geometry')]
-		if final_footprints_geom:
-			valid_final_footprints = [fp.buffer(0) if not fp.is_valid else fp for fp in final_footprints_geom]
-			valid_final_footprints = [fp for fp in valid_final_footprints if fp.is_valid and not fp.is_empty]
-			if valid_final_footprints:
-				final_union = unary_union(valid_final_footprints)
-				final_intersection = final_union.intersection(target_shape)
-				feature = {
-					"type": "Feature",
-					"geometry": mapping(final_intersection),
-					"properties": {"satellites": sats_in_plan, "estimated_coverage": plan_to_use['coverage']}
-				}
-				intersection_geojson['features'].append(feature)
-	intersection_path = os.path.join(output_dir, f"{area_name}_final_intersection.geojson")
-	with open(intersection_path, 'w', encoding='utf-8') as f:
-		json.dump(intersection_geojson, f, ensure_ascii=False, indent=2)
-	print(f"✅ 最终方案交集GeoJSON已保存到: {intersection_path}")
-
-	print("\n🎉 规划流程执行完毕！")
+		final_footprints = []
+		for s in plan_to_use['satellites']:
+			path = coverage_results[s].get('intersection_footprints_path')
+			if path and os.path.exists(path):
+				with open(path, 'r', encoding='utf-8') as f: geo_data = json.load(f)
+				final_footprints.extend([shape(feat['geometry']) for feat in geo_data.get('features', [])])
+		if final_footprints:
+			final_union = unary_union([make_valid(fp) for fp in final_footprints])
+			final_intersection = final_union.intersection(target_shape)
+			feature = geojson.Feature(geometry=mapping(final_intersection), properties=plan_to_use)
+			intersection_geojson = geojson.FeatureCollection([feature])
+			intersection_path = os.path.join(output_dir, f"{area_name}_final_intersection.geojson")
+			with open(intersection_path, 'w', encoding='utf-8') as f:
+				json.dump(intersection_geojson, f, ensure_ascii=False, indent=2)
+			print(f"✅ 最终方案交集GeoJSON已保存到: {intersection_path}")
 
 	return {
-		'success': optimal_plan is not None,  # 'success' 仅在达到目标时为 True
+		'success': optimal_plan is not None,
 		'report': report,
 		'map_path': map_path,
-		'intersection_geojson_path': intersection_path
+		'intersection_path': intersection_path
 	}
 
+
 def main():
-	"""主函数，用于演示如何调用通用规划器"""
+	"""主函数，作为工具链的编排器，按顺序执行所有步骤。"""
+	print("=" * 60)
+	print("🚀 通用卫星观测规划器 (工具链版) 开始运行 🚀".center(60))
+	print("=" * 60)
 
-	# --- 准备输入数据 ---
-	# 1. TLE 数据
-
-	tle_data = get_valid_satellite_tle_as_dict(satellite_db_path='D:\GeoSensingAPI\data\satellite_data.db',
-	                                           mission_theme='Land cover',
-	                                           sensor_type='Optical Sensor')
-
-	# 2. 观测区域 GeoJSON 文件路径
-	# 创建一个示例GeoJSON文件用于演示
-	wuhan_geojson_path = "D:\GeoSensingAPI\geojson\Wuhan.geojson"
-
-	# 3. 时间范围
+	# --- 0. 定义规划参数 ---
 	start_time = "2025-08-1 00:00:00.000"
 	end_time = "2025-08-1 23:59:59.000"
+	# 请确保数据库和目标区域文件路径正确
+	db_path = "D:\\GeoSensingAPI\\data\\satellite_data.db"
+	target_geojson_path = "D:\\GeoSensingAPI\\data\\Wuhan.geojson"
+	target_coverage_goal = 0.95
+	satellite_fov = 11.0
+	time_interval_seconds = 600
+	base_output_dir = "Wuhan_Planning_Results_Toolchain"
+	overlap_output_dir = os.path.join(base_output_dir, "B_observation_overlaps")
+	final_plan_output_dir = os.path.join(base_output_dir, "C_final_plan")
 
-	# --- 调用通用规划函数 ---
-	planning_results = plan_satellite_observation(
-		target_geojson_path=wuhan_geojson_path,
-		tle_dict=tle_data,
-		start_time=start_time,
-		end_time=end_time,
-		target_coverage=0.95,  # 设定一个较高的目标覆盖率
-		fov=10.0,
-		output_dir="Wuhan_Planning_Results"  # 指定本次规划的输出目录
+	# --- 步骤 A: 获取 TLE 数据 ---
+	print("\n" + "=" * 60)
+	print(" A. 从数据库获取卫星 TLE ".center(60))
+	print("=" * 60)
+	try:
+		tle_data = get_valid_satellite_tle_as_dict(
+			satellite_db_path=db_path,
+			mission_theme='Land cover',
+			sensor_type='Optical Sensor'
+		)
+		if not tle_data: raise ValueError("数据库中没有找到符合条件的TLE数据")
+		print(f"✅ 成功从数据库加载 {len(tle_data)} 颗卫星的 TLE 数据。")
+	except Exception as e:
+		print(f"❌ 步骤 A 失败: {e}")
+		return
+
+	# --- 步骤 B: 计算观测重叠率 ---
+	print("\n" + "=" * 60)
+	print(" B. 计算观测重叠率 ".center(60))
+	print("=" * 60)
+	try:
+		coverage_results = get_observation_overlap(
+			tle_dict=tle_data, start_time_str=start_time, end_time_str=end_time,
+			target_geojson_path=target_geojson_path, fov=satellite_fov,
+			interval_seconds=time_interval_seconds, output_dir=overlap_output_dir
+		)
+		if not coverage_results:
+			print("\n⚠️ 在指定时间段内，没有卫星覆盖目标区域。规划流程结束。")
+			return
+		print(f"✅ 成功计算 {len(coverage_results)} 颗相交卫星的覆盖率。")
+		for sat, data in coverage_results.items():
+			print(f"   - {sat}: 覆盖率 {data['coverage_ratio']:.2%}")
+	except Exception as e:
+		print(f"❌ 步骤 B 失败: 计算覆盖率时发生错误: {e}")
+		return
+
+	# --- 步骤 C: 规划最优方案并生成报告 ---
+	final_results = plan_satellite_combination(
+		coverage_results=coverage_results,
+		target_geojson_path=target_geojson_path,
+		target_coverage=target_coverage_goal,
+		output_dir=final_plan_output_dir
 	)
 
-	# --- 打印最终推荐方案 ---
-	if planning_results and planning_results['success']:
-		plan = planning_results['report']['optimal_plan']
-		print("\n" + "=" * 60)
-		print("🏆 最终推荐方案 🏆")
-		print("=" * 60)
-		print(f"  - 类型: {'单星覆盖' if plan['type'] == 'single' else '多星组合'}")
-		print(f"  - 卫星: {', '.join(plan['satellites'])}")
-		print(f"  - 预估覆盖率: {plan['coverage']:.2%}")
-		print(f"  - 详细结果见: '{os.path.abspath('Wuhan_Planning_Results')}'")
+	# --- 4. 打印最终摘要 ---
+	if final_results and final_results.get('report'):
+		report = final_results['report']
+		if report.get('optimal_plan'):
+			plan = report['optimal_plan']
+			print("\n" + "=" * 60)
+			print("🏆 最终推荐方案 🏆".center(60))
+			print("=" * 60)
+			print(f"  - 类型: {'单星覆盖' if plan['type'] == 'single' else '多星组合'}")
+			print(f"  - 卫星: {', '.join(plan['satellites'])}")
+			print(f"  - 预估覆盖率: {plan['coverage']:.2%}")
+		elif report.get('best_effort_plan'):
+			plan = report['best_effort_plan']
+			print("\n" + "=" * 60)
+			print("〽️ 未达目标，提供尽力而为的最佳方案 〽️".center(60))
+			print("=" * 60)
+			print(f"  - 类型: 所有相交卫星组合")
+			print(f"  - 卫星: {', '.join(plan['satellites'])}")
+			print(f"  - 预估覆盖率: {plan['coverage']:.2%}")
+		print(f"  - 详细结果见: '{os.path.abspath(final_plan_output_dir)}'")
 		print("=" * 60)
 	else:
-		print("\n❌ 未能找到满足覆盖率目标的方案。")
+		print("\n❌ 未能生成任何最终规划方案。")
 
 
 if __name__ == "__main__":

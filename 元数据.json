@@ -1,0 +1,176 @@
+[{
+  "类别名称": "卫星操作",
+  "工具名称": "get_tle",
+  "工具版本": "1.0.0",
+  "任务链": {
+    "阶段": "发现阶段",
+    "任务类型": ["发现任务"]
+  },
+  "工具描述": "根据卫星名称获取一个或多个卫星的TLE（两行根数）数据。本工具用于发现阶段，提供轨道要素供后续时空筛选与可见性计算使用，不进行性能评估。",
+  "请求方式": "POST",
+  "幂等性": true,
+  "副作用": "无",
+  "接口": "127.0.0.1:8000/get_tle",
+  "输入格式": {
+    "类型": "object",
+    "属性": {
+      "卫星名称": {
+        "类型": ["string", "array"],
+        "描述": "单个卫星名称（字符串），或多个卫星名称组成的列表。例如：'ISS (ZARYA)' 或 ['LANDSAT 8', 'SENTINEL-2A']"
+      }
+    },
+    "必填": ["卫星名称"],
+    "允许附加属性": false
+  },
+  "输出格式": {
+    "单个结果": {
+      "类型": "object",
+      "属性": {
+        "信息": {
+          "类型": "string",
+          "描述": "该卫星的TLE文本（2-3行），或错误提示"
+        }
+      }
+    },
+    "多个结果": {
+      "类型": "object",
+      "属性": {
+        "结果": {
+          "类型": "object",
+          "附加属性": {
+            "类型": "string",
+            "描述": "对应卫星的TLE文本，或错误说明"
+          }
+        }
+      }
+    }
+  },
+  "示例请求": {
+    "卫星名称": "ISS (ZARYA)"
+  },
+  "示例响应": {
+    "信息": "0 ISS (ZARYA)\\n1 25544U 98067A   ...\\n2 25544 ..."
+  },
+  "示例响应多个": {
+    "结果": {
+      "LANDSAT 8": "1 39084U 13008A ...",
+      "SENTINEL-2A": "未找到TLE数据"
+    }
+  },
+  "错误格式": {
+    "类型": "object",
+    "属性": {
+      "错误": { "类型": "string" },
+      "详情": { "类型": "string" }
+    }
+  },
+  "行为规范": {
+    "需要思考字段": true,
+    "思考说明": [
+      "当前任务是什么",
+      "处于哪个阶段（发现阶段）",
+      "为什么要获取TLE",
+      "后续如何使用（如计算可见性、轨道倾角等）"
+    ]
+  },
+  "示例": [
+    {
+      "思考": "用户需要获取若干候选卫星的轨道覆盖以便后续过境筛选。根据前文分析，当前执行的任务是一个工具链条为[任务阶段->发现阶段]的任务。当前任务链条处于发现阶段。为了继续，我需要调用 `get_tle` 函数来获取数据库中卫星的TLE数据。这个函数需要卫星的全名作为输入，才能获取结果。获得get_tle工具的输出后需要将get_tle的输出给get_observation_lace调用来计算卫星在给定时间内的覆盖",
+      "工具": "get_tle",
+      "输入": { "卫星名称": ["LANDSAT 8", "SENTINEL-2A"] }
+    },
+    {
+      "思考": "用户需要ISS当前的TLE以计算过境时间。根据前文分析，当前执行的任务是一个工具链条为[任务阶段->发现阶段]的任务。当前任务链条处于发现阶段。为了继续，我需要调用 `get_tle` 函数来获取ISS卫星的TLE数据。这个函数需要卫星的全名作为输入，才能获取结果。获得get_tle工具的输出后，需要将get_tle的输出给get_observation_lace调用来计算卫星在给定时间内的过境。",
+      "工具": "get_tle",
+      "输入": { "卫星名称": "ISS (ZARYA)" }
+    }
+  ]
+},{
+  "category_name": "Satellite Operations",
+  "tool_name": "get_tle",
+  "tool_version": "1.0.0",
+  "task_chain": {
+    "phase": "Discovery Phase",
+    "task_type": ["Discovery Task"]
+  },
+  "tool_description": "Retrieve the TLE (Two-Line Element) data for one or more satellites based on their name. This tool is used in the discovery phase to provide orbital elements for subsequent temporal/spatial filtering and visibility calculations, but does not perform performance evaluation.",
+  "request_method": "POST",
+  "idempotent": true,
+  "side_effects": "None",
+  "endpoint": "127.0.0.1:8000/get_tle",
+  "input_format": {
+    "type": "object",
+    "properties": {
+      "satellite_names": {
+        "type": ["string", "array"],
+        "description": "A single satellite name (string) or a list of satellite names. Example: 'ISS (ZARYA)' or ['LANDSAT 8', 'SENTINEL-2A']"
+      }
+    },
+    "required": ["satellite_names"],
+    "additionalProperties": false
+  },
+  "output_format": {
+    "single_result": {
+      "type": "object",
+      "properties": {
+        "message": {
+          "type": "string",
+          "description": "TLE text for the satellite (2-3 lines), or an error message"
+        }
+      }
+    },
+    "multiple_results": {
+      "type": "object",
+      "properties": {
+        "results": {
+          "type": "object",
+          "additionalProperties": {
+            "type": "string",
+            "description": "TLE text for the corresponding satellite, or an error message"
+          }
+        }
+      }
+    }
+  },
+  "example_request": {
+    "satellite_names": "ISS (ZARYA)"
+  },
+  "example_response": {
+    "message": "0 ISS (ZARYA)\\n1 25544U 98067A   ...\\n2 25544 ..."
+  },
+  "example_response_multiple": {
+    "results": {
+      "LANDSAT 8": "1 39084U 13008A ...",
+      "SENTINEL-2A": "No TLE data found"
+    }
+  },
+  "error_format": {
+    "type": "object",
+    "properties": {
+      "error": { "type": "string" },
+      "details": { "type": "string" }
+    }
+  },
+  "behavior_guidelines": {
+    "requires_thought_block": true,
+    "thought_explanation": [
+      "What the current task is",
+      "Which phase of the task chain you're in (Discovery Phase)",
+      "Why TLE retrieval is necessary",
+      "How the results will be used downstream (e.g., for visibility calculations, orbital inclination)"
+    ]
+  },
+  "examples": [
+    {
+      "thought": "The user needs to retrieve the orbital coverage for several candidate satellites in order to proceed with the subsequent pass filtering. Based on previous analysis, the current task follows a toolchain of [Task/Requirement Phase -> Discovery Phase]. The task is currently in the Discovery Phase. To proceed, I need to call the `get_tle` function to retrieve the TLE data for the satellites in the database. This function requires the full satellite name as input to retrieve the result. After obtaining the output from the get_tle tool, it will be passed to the get_observation_lace tool to calculate satellite coverage at a given time.",
+      "tool": "get_tle",
+      "input": { "satellite_names": ["LANDSAT 8", "SENTINEL-2A"] }
+    },
+    {
+      "thought": "The user needs the current TLE for ISS to calculate the pass times. Based on previous analysis, the current task follows a toolchain of [Task/Requirement Phase -> Discovery Phase]. The task is currently in the Discovery Phase. To proceed, I need to call the `get_tle` function to retrieve the TLE data for the ISS satellite. This function requires the full name of the satellite as input to retrieve the result. After obtaining the output from the get_tle tool, it will be passed to the get_observation_lace tool to calculate the satellite's passes at a given time.",
+      "tool": "get_tle",
+      "input": { "satellite_names": "ISS (ZARYA)" }
+    }
+  ]
+}
+]

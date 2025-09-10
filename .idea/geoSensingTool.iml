@@ -1,8 +1,17 @@
 <?xml version="1.0" encoding="UTF-8"?>
 <module type="PYTHON_MODULE" version="4">
   <component name="NewModuleRootManager">
-    <content url="file://$MODULE_DIR$" />
-    <orderEntry type="jdk" jdkName="Python 3.8" jdkType="Python SDK" />
+    <content url="file://$MODULE_DIR$">
+      <excludeFolder url="file://$MODULE_DIR$/.idea/dataSources" />
+      <excludeFolder url="file://$MODULE_DIR$/DeployTool/geojson" />
+      <excludeFolder url="file://$MODULE_DIR$/DeployTool/Wuhan_Planning_Results" />
+      <excludeFolder url="file://$MODULE_DIR$/EvaluationTool/geojson" />
+      <excludeFolder url="file://$MODULE_DIR$/EvaluationTool/intersection_results" />
+      <excludeFolder url="file://$MODULE_DIR$/satelliteTool/geojson" />
+      <excludeFolder url="file://$MODULE_DIR$/satelliteTool/intersection_results" />
+      <excludeFolder url="file://$MODULE_DIR$/geojson" />
+    </content>
+    <orderEntry type="jdk" jdkName="Python 3.9 (GeoSensingAPI)" jdkType="Python SDK" />
     <orderEntry type="sourceFolder" forTests="false" />
   </component>
   <component name="TestRunnerService">

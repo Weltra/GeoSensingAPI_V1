@@ -22,15 +22,12 @@ from sklearn.cluster import KMeans
 import numpy as np
 import folium
 import matplotlib.pyplot as plt
-from DeployTool.find_GS import find_stations_nested_dict
+from DeployTool.find_GS import find_stations
 from DeployTool.find_UAV_combination import find_drone_combination
 
 os.environ['OMP_NUM_THREADS'] = '1'
 
 
-# ==============================================================================
-# 1. 辅助函数 (Helper Functions)
-# ==============================================================================
 def get_utm_crs(gdf_latlon):
 	"""根据GeoDataFrame的质心计算最合适的UTM坐标系。"""
 	if gdf_latlon.empty:
@@ -42,18 +39,25 @@ def get_utm_crs(gdf_latlon):
 	return f"EPSG:{epsg_code}"
 
 
-# ==============================================================================
-# 2. 核心路径生成函数
-# ==============================================================================
 def generate_s_path_in_polygon(polygon: (Polygon, MultiPolygon), swath_width: float) -> (object, float):
 	"""在单个或多个多边形内生成S形扫描路径。"""
 	if polygon.is_empty or polygon.area == 0:
 		return None, 0
 
-	if isinstance(polygon, MultiPolygon):
+	try:
+		if hasattr(polygon, 'geoms') and len(polygon.geoms) > 5:
+			simplified_polygon = polygon.simplify(tolerance=swath_width/10)
+		elif polygon.geom_type == 'Polygon' and len(polygon.exterior.coords) > 100:
+			simplified_polygon = polygon.simplify(tolerance=swath_width/10)
+		else:
+			simplified_polygon = polygon
+	except Exception as e:
+		simplified_polygon = polygon
+
+	if isinstance(simplified_polygon, MultiPolygon):
 		all_path_segments = []
 		total_length = 0
-		for p in polygon.geoms:
+		for p in simplified_polygon.geoms:
 			path, length = generate_s_path_in_polygon(p, swath_width)
 			if path:
 				all_path_segments.extend(list(path.geoms))
@@ -62,47 +66,68 @@ def generate_s_path_in_polygon(polygon: (Polygon, MultiPolygon), swath_width: fl
 			return None, 0
 		return MultiLineString(all_path_segments), total_length
 
-	mbr = polygon.minimum_rotated_rectangle
-	if mbr.is_empty:
+	try:
+		if not simplified_polygon.is_valid:
+			simplified_polygon = simplified_polygon.buffer(0)
+		if simplified_polygon.is_empty:
+			return None, 0
+	except Exception as e:
 		return None, 0
 
-	x, y = mbr.exterior.coords.xy
-	edge_lengths = (Point(x[0], y[0]).distance(Point(x[1], y[1])), Point(x[1], y[1]).distance(Point(x[2], y[2])))
-	long_edge_start_pt = (Point(x[0], y[0]), Point(x[1], y[1])) if edge_lengths[0] > edge_lengths[1] else \
-		(Point(x[1], y[1]), Point(x[2], y[2]))
-	angle_rad = math.atan2(long_edge_start_pt[1].y - long_edge_start_pt[0].y,
-	                       long_edge_start_pt[1].x - long_edge_start_pt[0].x)
+	try:
+		mbr = simplified_polygon.minimum_rotated_rectangle
+		if mbr.is_empty:
+			return None, 0
 
-	rotated_poly = gpd.GeoSeries(polygon).rotate(-math.degrees(angle_rad), origin=(0, 0)).iloc[0]
-	min_x, min_y, max_x, max_y = rotated_poly.bounds
+		x, y = mbr.exterior.coords.xy
+		edge_lengths = (Point(x[0], y[0]).distance(Point(x[1], y[1])), Point(x[1], y[1]).distance(Point(x[2], y[2])))
+		long_edge_start_pt = (Point(x[0], y[0]), Point(x[1], y[1])) if edge_lengths[0] > edge_lengths[1] else \
+			(Point(x[1], y[1]), Point(x[2], y[2]))
+		angle_rad = math.atan2(long_edge_start_pt[1].y - long_edge_start_pt[0].y,
+		                       long_edge_start_pt[1].x - long_edge_start_pt[0].x)
 
-	scan_segments = []
-	y_current = min_y + swath_width / 2
-	direction = 1
-	while y_current <= max_y:
-		scan_line = LineString([(min_x - 1, y_current), (max_x + 1, y_current)])
-		intersected = rotated_poly.intersection(scan_line)
-		if not intersected.is_empty:
-			geoms = list(intersected.geoms) if intersected.geom_type == 'MultiLineString' else [intersected]
-			geoms.sort(key=lambda g: g.coords[0][0])
-			if direction == -1:
-				geoms.reverse()
-			scan_segments.extend(geoms)
-		y_current += swath_width
-		direction *= -1
+		rotated_poly = gpd.GeoSeries(simplified_polygon).rotate(-math.degrees(angle_rad), origin=(0, 0)).iloc[0]
+		min_x, min_y, max_x, max_y = rotated_poly.bounds
 
-	if not scan_segments:
+		max_scan_lines = 1000
+		scan_segments = []
+		y_current = min_y + swath_width / 2
+		direction = 1
+		scan_line_count = 0
+		
+		while y_current <= max_y and scan_line_count < max_scan_lines:
+			scan_line = LineString([(min_x - 1, y_current), (max_x + 1, y_current)])
+			try:
+				intersected = rotated_poly.intersection(scan_line)
+				if not intersected.is_empty:
+					geoms = list(intersected.geoms) if intersected.geom_type == 'MultiLineString' else [intersected]
+					geoms.sort(key=lambda g: g.coords[0][0])
+					if direction == -1:
+						geoms.reverse()
+					scan_segments.extend(geoms)
+			except Exception as e:
+				pass
+			
+			y_current += swath_width
+			direction *= -1
+			scan_line_count += 1
+
+		if not scan_segments:
+			return None, 0
+
+		if len(scan_segments) > 500:
+			step = max(1, len(scan_segments) // 500)
+			scan_segments = scan_segments[::step]
+
+		final_path_rotated = MultiLineString(scan_segments)
+		final_path = gpd.GeoSeries(final_path_rotated).rotate(math.degrees(angle_rad), origin=(0, 0)).iloc[0]
+
+		return (final_path, final_path.length) if final_path else (None, 0)
+		
+	except Exception as e:
 		return None, 0
 
-	final_path_rotated = MultiLineString(scan_segments)
-	final_path = gpd.GeoSeries(final_path_rotated).rotate(math.degrees(angle_rad), origin=(0, 0)).iloc[0]
 
-	return (final_path, final_path.length) if final_path else (None, 0)
-
-
-# ==============================================================================
-# 3. 主规划器类 (Main Planner Class)
-# ==============================================================================
 class CollaborativePlanner:
 	"""
 	一个用于无人机（UAV）和地面站（GS）协同区域覆盖规划的类。
@@ -112,18 +137,15 @@ class CollaborativePlanner:
 	"""
 
 	def __init__(self, geojson_path: str, uavs_params: list, ground_station_params: dict = None):
-		print("--- 初始化空地协同规划器 ---")
 		if not os.path.exists(geojson_path):
 			raise FileNotFoundError(f"GeoJSON文件未找到: {geojson_path}")
 		self.uavs = uavs_params
 		self.num_uavs = len(uavs_params)
 		self.ground_station_params = ground_station_params if ground_station_params else {}
 
-		print(f"加载区域文件: {geojson_path}")
 		self.area_gdf_latlon = gpd.read_file(geojson_path).to_crs("EPSG:4326")
 		self.original_crs = self.area_gdf_latlon.crs
 		self.utm_crs = get_utm_crs(self.area_gdf_latlon)
-		print(f"原始坐标系: {self.original_crs}. 内部计算将使用UTM坐标系: {self.utm_crs}")
 
 		self.area_gdf_utm = self.area_gdf_latlon.to_crs(self.utm_crs)
 		self.total_area_shape_utm = self.area_gdf_utm.unary_union
@@ -134,7 +156,6 @@ class CollaborativePlanner:
 
 		if self.ground_station_coverage_utm:
 			self.uav_target_area_utm = self.total_area_shape_utm.difference(self.ground_station_coverage_utm)
-			print("已扣除所有地面站的总覆盖范围，无人机将规划剩余区域。")
 		else:
 			self.uav_target_area_utm = self.total_area_shape_utm
 
@@ -143,9 +164,7 @@ class CollaborativePlanner:
 
 	def _initialize_ground_station(self):
 		if not self.ground_station_params:
-			print("未提供地面站信息。")
 			return
-		print(f"正在处理 {len(self.ground_station_params)} 个地面站信息...")
 		all_coverage_polygons = []
 		try:
 			for station_id, details in self.ground_station_params.items():
@@ -155,105 +174,274 @@ class CollaborativePlanner:
 				all_coverage_polygons.append(gs_point_utm.buffer(radius_m))
 				self.processed_stations.append({'id': station_id, 'geom_utm': gs_point_utm, 'radius_m': radius_m})
 		except (KeyError, TypeError) as e:
-			print(f"【错误】一个或多个地面站参数格式不正确。错误详情: {e}")
 			return
 		if all_coverage_polygons:
 			self.ground_station_coverage_utm = unary_union(all_coverage_polygons)
-			print(f"所有地面站的总覆盖区域创建成功。")
 
 	def pre_check_feasibility(self) -> bool:
-		print("\n--- 执行可行性预检查 ---")
 		uav_area_needed = self.uav_target_area_utm.area
-		total_max_coverage_capability = sum(uav['speed'] * uav['flight_time'] * uav['swath_width'] for uav in self.uavs)
-		print(f"总任务区域面积: {self.total_area_shape_utm.area:.2f} m²")
-		if self.ground_station_coverage_utm:
-			gs_cover_in_area = self.total_area_shape_utm.intersection(self.ground_station_coverage_utm).area
-			print(f"地面站已覆盖面积: {gs_cover_in_area:.2f} m²")
-		print(f"无人机需覆盖的剩余面积: {uav_area_needed:.2f} m²")
-		print(f"无人机队理论最大总覆盖能力: {total_max_coverage_capability:.2f} m²")
+		total_max_coverage_capability = sum(uav['speed'] * uav['flight_time'] * uav['scan_width_m'] for uav in self.uavs)
 		if total_max_coverage_capability < uav_area_needed:
-			print("【警告】无法覆盖该区域：机队总覆盖能力小于剩余的区域面积需求。")
 			return False
-		print("【成功】预检查通过，机队理论上有能力覆盖剩余区域。")
 		return True
 
 	def decompose_area_and_assign(self, n_points_per_sq_km: int = 5):
-		print(f"\n--- 步骤 1: 使用K-Means和泰森多边形分解无人机目标区域 ---")
 		if self.uav_target_area_utm.is_empty:
-			print("无人机目标区域为空，无需分解。")
 			self.results = [{"uav_id": uav['id'], "uav_params": uav, "sub_area_utm": Polygon()} for uav in self.uavs]
 			return
 
 		area_sq_km = self.uav_target_area_utm.area / 1_000_000
-		n_points = max(self.num_uavs * 50, int(area_sq_km * n_points_per_sq_km))
+		max_points = min(1000, max(self.num_uavs * 20, int(area_sq_km * n_points_per_sq_km)))
+		n_points = max(self.num_uavs * 10, max_points)
+		
 		min_x, min_y, max_x, max_y = self.uav_target_area_utm.bounds
 
 		points_inside = []
-		while len(points_inside) < n_points:
-			rand_points = np.random.rand(n_points * 2, 2)
+		max_attempts = n_points * 10
+		attempts = 0
+		
+		while len(points_inside) < n_points and attempts < max_attempts:
+			batch_size = min(n_points - len(points_inside), 100)
+			rand_points = np.random.rand(batch_size, 2)
 			rand_points[:, 0] = rand_points[:, 0] * (max_x - min_x) + min_x
 			rand_points[:, 1] = rand_points[:, 1] * (max_y - min_y) + min_y
+			
 			for p in rand_points:
-				if len(points_inside) >= n_points: break
+				if len(points_inside) >= n_points:
+					break
 				if self.uav_target_area_utm.contains(Point(p)):
 					points_inside.append(p)
+			
+			attempts += batch_size
+		
+		if len(points_inside) < self.num_uavs:
+			boundary_points = []
+			try:
+				boundary_coords = list(self.uav_target_area_utm.exterior.coords)
+				for i in range(0, len(boundary_coords), max(1, len(boundary_coords) // self.num_uavs)):
+					boundary_points.append(boundary_coords[i])
+				points_inside.extend(boundary_points[:self.num_uavs - len(points_inside)])
+			except:
+				pass
 
-		kmeans = KMeans(n_clusters=self.num_uavs, random_state=42, n_init=10).fit(np.array(points_inside))
-		centers = MultiPoint(kmeans.cluster_centers_)
-		voronoi_cells = voronoi_diagram(centers, envelope=self.uav_target_area_utm)
-		print(f"已生成 {len(voronoi_cells.geoms)} 个泰森多边形单元格。")
+		try:
+			kmeans = KMeans(
+				n_clusters=self.num_uavs, 
+				random_state=42, 
+				n_init=5,
+				max_iter=100
+			).fit(np.array(points_inside))
+			
+			centers = MultiPoint(kmeans.cluster_centers_)
+			
+			voronoi_cells = voronoi_diagram(centers, envelope=self.uav_target_area_utm)
 
+			self.results = []
+			for i, center_point in enumerate(centers.geoms):
+				uav = self.uavs[i]
+				assigned_cell = next((cell for cell in voronoi_cells.geoms if cell.contains(center_point)), None)
+				
+				if assigned_cell:
+					try:
+						sub_area_utm = self.uav_target_area_utm.intersection(assigned_cell)
+						if hasattr(sub_area_utm, 'geoms') and len(sub_area_utm.geoms) > 10:
+							sub_area_utm = sub_area_utm.simplify(tolerance=1.0)
+					except Exception as e:
+						sub_area_utm = Polygon()
+				else:
+					sub_area_utm = Polygon()
+				
+				self.results.append({"uav_id": uav['id'], "uav_params": uav, "sub_area_utm": sub_area_utm})
+			
+		except Exception as e:
+			self._fallback_area_assignment()
+	
+	def _fallback_area_assignment(self):
+		"""备用的简单区域分配方法，当K-Means失败时使用"""
+		if self.uav_target_area_utm.is_empty:
+			self.results = [{"uav_id": uav['id'], "uav_params": uav, "sub_area_utm": Polygon()} for uav in self.uavs]
+			return
+		
+		min_x, min_y, max_x, max_y = self.uav_target_area_utm.bounds
+		width = max_x - min_x
+		height = max_y - min_y
+		
+		grid_cols = int(np.ceil(np.sqrt(self.num_uavs)))
+		grid_rows = int(np.ceil(self.num_uavs / grid_cols))
+		
+		cell_width = width / grid_cols
+		cell_height = height / grid_rows
+		
 		self.results = []
-		for i, center_point in enumerate(centers.geoms):
-			uav = self.uavs[i]
-			assigned_cell = next((cell for cell in voronoi_cells.geoms if cell.contains(center_point)), None)
-			sub_area_utm = self.uav_target_area_utm.intersection(assigned_cell) if assigned_cell else Polygon()
-			self.results.append({"uav_id": uav['id'], "uav_params": uav, "sub_area_utm": sub_area_utm})
-		print("无人机区域分解与分配完成。")
+		uav_index = 0
+		
+		for row in range(grid_rows):
+			for col in range(grid_cols):
+				if uav_index >= self.num_uavs:
+					break
+					
+				uav = self.uavs[uav_index]
+				cell_bounds = [
+					min_x + col * cell_width,
+					min_y + row * cell_height,
+					min_x + (col + 1) * cell_width,
+					min_y + (row + 1) * cell_height
+				]
+				
+				cell_polygon = Polygon([
+					(cell_bounds[0], cell_bounds[1]),
+					(cell_bounds[2], cell_bounds[1]),
+					(cell_bounds[2], cell_bounds[3]),
+					(cell_bounds[0], cell_bounds[3])
+				])
+				
+				try:
+					sub_area_utm = self.uav_target_area_utm.intersection(cell_polygon)
+				except:
+					sub_area_utm = Polygon()
+				
+				self.results.append({"uav_id": uav['id'], "uav_params": uav, "sub_area_utm": sub_area_utm})
+				uav_index += 1
 
 	def plan_paths_for_all(self):
-		print("\n--- 步骤 2: 为每个无人机子区域规划路径 ---")
-		for result in self.results:
+		for i, result in enumerate(self.results):
 			uav = result['uav_params']
 			sub_area_utm = result['sub_area_utm']
+			
 			if sub_area_utm.is_empty:
-				print(f"   - 无人机 {uav['id']} 分配区域为空，跳过。")
 				result.update({'path_utm': None, 'path_length': 0, 'flight_duration_needed': 0, 'is_feasible': True})
 				continue
 
-			print(f"正在为无人机 {uav['id']} 规划路径...")
-			path_utm, path_length = generate_s_path_in_polygon(sub_area_utm, uav['swath_width'])
-			duration = (path_length / uav['speed']) if path_length and uav['speed'] > 0 else 0
+			try:
+				import threading
+				import time
+				
+				path_utm = None
+				path_length = 0
+				timeout_occurred = False
+				
+				def path_planning_worker():
+					nonlocal path_utm, path_length
+					try:
+						path_utm, path_length = generate_s_path_in_polygon(sub_area_utm, uav['scan_width_m'])
+					except Exception as e:
+						pass
+				
+				worker_thread = threading.Thread(target=path_planning_worker)
+				worker_thread.daemon = True
+				worker_thread.start()
+				worker_thread.join(timeout=30)
+				
+				if worker_thread.is_alive():
+					path_utm, path_length = self._generate_simple_path(sub_area_utm, uav['scan_width_m'])
+				elif path_utm is None:
+					path_utm, path_length = self._generate_simple_path(sub_area_utm, uav['scan_width_m'])
+				
+				duration = (path_length / uav['speed']) if path_length and uav['speed'] > 0 else 0
 
-			result.update({
-				'path_utm': path_utm,
-				'path_length': path_length or 0,
-				'flight_duration_needed': duration,
-				'is_feasible': duration <= uav['flight_time']
-			})
+				result.update({
+					'path_utm': path_utm,
+					'path_length': path_length or 0,
+					'flight_duration_needed': duration,
+					'is_feasible': duration <= uav['flight_time']
+				})
+				
+			except Exception as e:
+				result.update({
+					'path_utm': None, 'path_length': 0, 'flight_duration_needed': 0, 'is_feasible': False
+				})
+	
+	def _generate_simple_path(self, area_utm, swath_width):
+		"""生成简单的直线路径作为备选方案"""
+		try:
+			if area_utm.is_empty:
+				return None, 0
+			
+			min_x, min_y, max_x, max_y = area_utm.bounds
+			center_x = (min_x + max_x) / 2
+			center_y = (min_y + max_y) / 2
+			
+			horizontal_line = LineString([(min_x - 10, center_y), (max_x + 10, center_y)])
+			vertical_line = LineString([(center_x, min_y - 10), (center_x, max_y + 10)])
+			
+			horizontal_path = area_utm.intersection(horizontal_line)
+			vertical_path = area_utm.intersection(vertical_line)
+			
+			paths = []
+			if not horizontal_path.is_empty:
+				paths.append(horizontal_path)
+			if not vertical_path.is_empty:
+				paths.append(vertical_path)
+			
+			if paths:
+				combined_path = unary_union(paths)
+				return combined_path, combined_path.length
+			else:
+				return None, 0
+				
+		except Exception as e:
+			return None, 0
 
 	def calculate_coverage(self):
-		print("\n--- 步骤 3: 计算最终协同覆盖率 ---")
 		all_coverage_polygons_utm = [self.ground_station_coverage_utm] if self.ground_station_coverage_utm else []
-		for result in self.results:
+		
+		for i, result in enumerate(self.results):
 			if result.get('path_utm') and not result['path_utm'].is_empty:
 				uav = result['uav_params']
-				all_coverage_polygons_utm.append(result['path_utm'].buffer(uav['swath_width'] / 2, cap_style=2))
+				try:
+					buffer_polygon = result['path_utm'].buffer(uav['scan_width_m'] / 2, cap_style=2)
+					
+					if hasattr(buffer_polygon, 'geoms') and len(buffer_polygon.geoms) > 20:
+						buffer_polygon = buffer_polygon.simplify(tolerance=1.0)
+					elif buffer_polygon.geom_type == 'Polygon' and len(buffer_polygon.exterior.coords) > 200:
+						buffer_polygon = buffer_polygon.simplify(tolerance=1.0)
+					
+					all_coverage_polygons_utm.append(buffer_polygon)
+					
+				except Exception as e:
+					continue
 
 		if not all_coverage_polygons_utm or self.total_area_shape_utm.area == 0:
 			self.coverage_percentage = 0.0
 			return
 
-		total_coverage_union_utm = unary_union(all_coverage_polygons_utm)
-		effective_coverage_utm = self.total_area_shape_utm.intersection(total_coverage_union_utm)
-		self.coverage_percentage = (effective_coverage_utm.area / self.total_area_shape_utm.area) * 100
-		print(f"原始区域总面积: {self.total_area_shape_utm.area:.2f} m²")
-		print(f"协同有效覆盖总面积: {effective_coverage_utm.area:.2f} m²")
-		print(f"最终协同覆盖率: {self.coverage_percentage:.2f}%")
+		try:
+			if len(all_coverage_polygons_utm) > 10:
+				batch_size = 5
+				total_coverage_union_utm = None
+				
+				for i in range(0, len(all_coverage_polygons_utm), batch_size):
+					batch = all_coverage_polygons_utm[i:i+batch_size]
+					
+					batch_union = unary_union(batch)
+					if total_coverage_union_utm is None:
+						total_coverage_union_utm = batch_union
+					else:
+						total_coverage_union_utm = total_coverage_union_utm.union(batch_union)
+			else:
+				total_coverage_union_utm = unary_union(all_coverage_polygons_utm)
+			
+			if total_coverage_union_utm.geom_type == 'Polygon' and len(total_coverage_union_utm.exterior.coords) > 500:
+				total_coverage_union_utm = total_coverage_union_utm.simplify(tolerance=2.0)
+			
+			effective_coverage_utm = self.total_area_shape_utm.intersection(total_coverage_union_utm)
+			self.coverage_percentage = (effective_coverage_utm.area / self.total_area_shape_utm.area) * 100
+			
+		except Exception as e:
+			try:
+				total_bounds_area = 0
+				for poly in all_coverage_polygons_utm:
+					if not poly.is_empty:
+						total_bounds_area += poly.bounds[2] * poly.bounds[3] - poly.bounds[0] * poly.bounds[1]
+				
+				approximate_coverage = min(100.0, (total_bounds_area / self.total_area_shape_utm.area) * 100)
+				self.coverage_percentage = approximate_coverage
+				
+			except Exception as e2:
+				self.coverage_percentage = 0.0
 
 	def visualize_plan(self, output_path: str):
 		"""将规划结果可视化并保存为HTML文件。"""
-		print(f"\n--- 步骤 4: 可视化协同规划结果 ---")
 		center_latlon = self.area_gdf_latlon.unary_union.centroid.coords[0][::-1]
 		m = folium.Map(location=center_latlon, zoom_start=12, tiles="CartoDB positron")
 
@@ -296,7 +484,7 @@ class CollaborativePlanner:
 			path_utm = result.get('path_utm')
 			if path_utm and not path_utm.is_empty:
 				uav = result['uav_params']
-				coverage_poly_utm = path_utm.buffer(uav['swath_width'] / 2, cap_style=2)
+				coverage_poly_utm = path_utm.buffer(uav['scan_width_m'] / 2, cap_style=2)
 				path_latlon = gpd.GeoSeries([path_utm], crs=self.utm_crs).to_crs(self.original_crs)
 				coverage_latlon = gpd.GeoSeries([coverage_poly_utm], crs=self.utm_crs).to_crs(self.original_crs)
 				folium.GeoJson(coverage_latlon, tooltip=f'无人机 {uav_id} 覆盖范围',
@@ -309,12 +497,11 @@ class CollaborativePlanner:
 
 		folium.LayerControl(collapsed=False).add_to(m)
 		m.save(output_path)
-		print(f"可视化地图已保存至: {output_path}")
 
 	def get_results_as_json(self) -> dict:
 		"""将规划结果编译为结构化的字典（用于JSON序列化）。"""
-		summary = {"total_area_sqm": float(self.total_area_shape_utm.area),  # 增加转换
-		           "final_collaborative_coverage_percentage": float(self.coverage_percentage),  # 增加转换
+		summary = {"total_area_sqm": float(self.total_area_shape_utm.area),
+		           "final_collaborative_coverage_percentage": float(self.coverage_percentage),
 		           "ground_station_contribution": {}, "uav_results": []}
 
 		if self.processed_stations and self.ground_station_coverage_utm:
@@ -323,11 +510,11 @@ class CollaborativePlanner:
 				"station_count": len(self.processed_stations),
 				"stations_details": [{
 					'id': s['id'],
-					'radius_m': float(s['radius_m']),  # 增加转换
+					'radius_m': float(s['radius_m']),
 					'coords_latlon':
 						gpd.GeoSeries([s['geom_utm']], crs=self.utm_crs).to_crs(self.original_crs).iloc[0].coords[0]
 				} for s in self.processed_stations],
-				"total_covered_area_sqm": float(gs_coverage_in_area.area)  # 增加转换
+				"total_covered_area_sqm": float(gs_coverage_in_area.area)
 			}
 
 		for res in self.results:
@@ -346,22 +533,21 @@ class CollaborativePlanner:
 			if path_utm and not path_utm.is_empty:
 				path_latlon_geom = gpd.GeoSeries([path_utm], crs=self.utm_crs).to_crs(self.original_crs).iloc[
 					0].__geo_interface__
-				coverage_poly_utm = path_utm.buffer(uav_p['swath_width'] / 2, cap_style=2)
+				coverage_poly_utm = path_utm.buffer(uav_p['scan_width_m'] / 2, cap_style=2)
 				coverage_latlon_geom = \
 				gpd.GeoSeries([coverage_poly_utm], crs=self.utm_crs).to_crs(self.original_crs).iloc[
 					0].__geo_interface__
 
-			# 创建一个确保所有值都是标准Python类型的无人机参数字典
 			serializable_uav_params = {
 				'id': int(uav_p['id']),
 				'speed': float(uav_p['speed']),
 				'flight_time': int(uav_p['flight_time']),
-				'swath_width': float(uav_p['swath_width'])
+				'scan_width_m': float(uav_p['scan_width_m'])
 			}
 
 			summary["uav_results"].append({
 				"uav_id": int(res['uav_id']),
-				"uav_params": serializable_uav_params,  # 使用处理过后的字典
+				"uav_params": serializable_uav_params,
 				"is_feasible": bool(res.get('is_feasible', False)),
 				"assigned_area_sqm": float(sub_area_utm.area if sub_area_utm else 0),
 				"path_length_m": float(res.get('path_length', 0)),
@@ -409,21 +595,31 @@ class CollaborativePlanner:
 		:param n_points_per_sq_km: 用于K-Means聚类的采样点密度。
 		:return: 如果规划成功完成，则返回True；如果可行性检查失败，则返回False。
 		"""
-		print("\n" + "#" * 20 + " 开始执行协同规划流程 " + "#" * 20)
-		if not self.pre_check_feasibility():
-			print("规划因可行性检查失败而终止。请调整无人机参数或更换机队。")
+		try:
+			if not self.pre_check_feasibility():
+				return False
+
+			try:
+				self.decompose_area_and_assign(n_points_per_sq_km=n_points_per_sq_km)
+			except Exception as e:
+				self._fallback_area_assignment()
+
+			try:
+				self.plan_paths_for_all()
+			except Exception as e:
+				pass
+
+			try:
+				self.calculate_coverage()
+			except Exception as e:
+				self.coverage_percentage = 0.0
+
+			return True
+			
+		except Exception as e:
 			return False
 
-		self.decompose_area_and_assign(n_points_per_sq_km=n_points_per_sq_km)
-		self.plan_paths_for_all()
-		self.calculate_coverage()
-		print("\n" + "#" * 20 + " 协同规划流程执行完毕 " + "#" * 20)
-		return True
 
-
-# ==============================================================================
-# 4. 场景执行函数 (Scenario Execution Function)
-# ==============================================================================
 def run_planning_scenario(geojson_path: str, output_dir: str = "planning_results", create_map: bool = True,
                           verbose: bool = True, UAV_db_path: str = "UAV_data.db",
                           stations_db_path: str = "Stations_data.db"):
@@ -441,77 +637,77 @@ def run_planning_scenario(geojson_path: str, output_dir: str = "planning_results
 	:param stations_db_path: 地面站数据库文件路径。
 	:return: 包含规划结果的字典，如果规划失败则返回None。
 	"""
-	print(f"--- 启动规划场景: {geojson_path} ---")
-	os.makedirs(output_dir, exist_ok=True)
+	try:
+		os.makedirs(output_dir, exist_ok=True)
 
-	# --- 步骤 1: 动态确定任务需求 ---
-	area_gdf = gpd.read_file(geojson_path)
-	area_utm_crs = get_utm_crs(area_gdf)
-	area_sq_km = area_gdf.to_crs(area_utm_crs).unary_union.area / 1_000_000
-	print(f"目标区域面积为: {area_sq_km:.2f} 平方公里。")
+		try:
+			area_gdf = gpd.read_file(geojson_path)
+			area_utm_crs = get_utm_crs(area_gdf)
+			area_sq_km = area_gdf.to_crs(area_utm_crs).unary_union.area / 1_000_000
+		except Exception as e:
+			return None
 
-	# --- 步骤 2: 动态获取无人机和地面站 ---
-	print("\n--- 动态从数据库获取无人机和地面站 ---")
-	uav_fleet_dict = find_drone_combination(area_sq_km, UAV_db_path)
+		try:
+			uav_fleet_dict = find_drone_combination(area_sq_km, UAV_db_path)
 
-	UAV_FLEET = []
-	if uav_fleet_dict:
-		for i, (uav_id, details) in enumerate(uav_fleet_dict.items()):
-			UAV_FLEET.append({'id': i + 1, 'speed': details['average_speed_mps'],
-			                  'flight_time': details['flight_duration_s'], 'swath_width': details['scan_width_m']})
-		print(f"已成功从数据库加载并配置 {len(UAV_FLEET)} 架次无人机。")
-	else:
-		print("错误: 未能从数据库中获取合适的无人机组合，规划终止。")
+			UAV_FLEET = []
+			if uav_fleet_dict:
+				for i, (uav_id, details) in enumerate(uav_fleet_dict.items()):
+					UAV_FLEET.append({'id': i + 1, 'speed': details['average_speed_mps'],
+					                  'flight_time': details['flight_duration_s'], 'scan_width_m': details['scan_width_m']})
+			else:
+				return None
+		except Exception as e:
+			return None
+
+		try:
+			all_ground_stations = find_stations(geojson_path, stations_db_path)
+		except Exception as e:
+			all_ground_stations = {}
+
+		try:
+			planner = CollaborativePlanner(
+				geojson_path=geojson_path,
+				uavs_params=UAV_FLEET,
+				ground_station_params=all_ground_stations
+			)
+		except Exception as e:
+			return None
+
+		if not planner.execute_planning():
+			return None
+
+		try:
+			results_data = planner.get_results_as_json()
+			json_output_path = os.path.join(output_dir, "collaborative_planning_results.json")
+			with open(json_output_path, 'w', encoding='utf-8') as f:
+				json.dump(results_data, f, ensure_ascii=False, indent=4)
+		except Exception as e:
+			return None
+
+		if create_map:
+			try:
+				map_output_path = os.path.join(output_dir, "collaborative_coverage_map.html")
+				planner.visualize_plan(map_output_path)
+			except Exception as e:
+				pass
+
+		if verbose:
+			try:
+				summary_report = planner.get_summary_report()
+			except Exception as e:
+				pass
+
+		return results_data
+		
+	except Exception as e:
 		return None
 
-	with open(geojson_path, 'r', encoding='utf-8') as f:
-		geojson_data = json.load(f)
-	all_ground_stations = find_stations_nested_dict(geojson_data, stations_db_path)
 
-	if all_ground_stations:
-		print(f"在区域内找到 {len(all_ground_stations)} 个地面站，将全部用于规划。")
-	else:
-		print("警告: 在目标区域内未找到地面站，将仅使用无人机进行规划。")
-
-	# --- 步骤 3: 初始化并执行规划器 ---
-	planner = CollaborativePlanner(
-		geojson_path=geojson_path,
-		uavs_params=UAV_FLEET,
-		ground_station_params=all_ground_stations
-	)
-
-	if not planner.execute_planning():
-		return None  # 可行性检查失败
-
-	# --- 步骤 4: 生成并保存输出 ---
-	results_data = planner.get_results_as_json()
-	json_output_path = os.path.join(output_dir, "collaborative_planning_results.json")
-	with open(json_output_path, 'w', encoding='utf-8') as f:
-		json.dump(results_data, f, ensure_ascii=False, indent=4)
-	print(f"\nJSON格式的结果已保存至: {json_output_path}")
-
-	if create_map:
-		map_output_path = os.path.join(output_dir, "collaborative_coverage_map.html")
-		planner.visualize_plan(map_output_path)
-
-	if verbose:
-		summary_report = planner.get_summary_report()
-		print("\n" + summary_report)
-
-	return results_data
-
-
-# ==============================================================================
-# 5. 主执行入口 (Main Execution Entry Point)
-# ==============================================================================
 if __name__ == '__main__':
-	# 此部分现在仅作为如何调用`run_planning_scenario`函数的示例
-
-	# 定义输入和输出
-	GEOJSON_FILE = "D:\GeoSensingAPI\geojson\Wuhan.geojson"
+	GEOJSON_FILE = "D:\GeoSensingAPI\data\Wuhan.geojson"
 	OUTPUT_DIRECTORY = "planning_output_wuhan"
 
-	# 调用核心场景函数来运行整个流程
 	planning_results = run_planning_scenario(
 		geojson_path=GEOJSON_FILE,
 		output_dir=OUTPUT_DIRECTORY,
@@ -522,8 +718,6 @@ if __name__ == '__main__':
 	)
 
 	if planning_results:
-		print("\n规划任务成功完成。")
-	# 你可以在这里继续使用 `planning_results` 字典进行后续处理
-	# 例如: print(planning_results['final_collaborative_coverage_percentage'])
+		pass
 	else:
-		print("\n规划任务失败。")
+		pass

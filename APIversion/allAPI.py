@@ -27,6 +27,7 @@ from GeoPandasTool.distance import distance
 from GeoPandasTool.dwithin import dwithin
 from GeoPandasTool.envelope import envelope
 from GeoPandasTool.exterior import exterior
+from GeoPandasTool.filter_sliver_polygons import filter_sliver_polygons
 from GeoPandasTool.geom_almost_equal import geom_almost_equal
 from GeoPandasTool.geom_equals import geom_equals
 from GeoPandasTool.geom_equals_exact import geom_equals_exact
@@ -57,9 +58,12 @@ from GeoPandasTool.union import union
 from GeoPandasTool.within import within
 from GeoPandasTool.translate import translate
 from satelliteTool.getPlaceBoundary import get_boundary
-from satelliteTool.get_TLE_data import get_tle
 from satelliteTool.get_orbit_radius import get_orbit_radius
 from satelliteTool.get_orbit_velocity import calculate_velocity
+from satelliteTool.find_Satellite import get_valid_satellite_tle_as_dict
+from satelliteTool.get_observation_overlap import get_observation_overlap
+from DeployTool.satellite_observation_planner import plan_satellite_combination
+from DeployTool.UAV_GS_planner import run_planning_scenario
 
 app = FastAPI()
 
@@ -550,26 +554,20 @@ def compute_difference(req: DifferenceRequest):
     输出格式：{"place1-place2": result, ...}
     """
     try:
-        result_dict = {}
+        tasks = []
         for item in req.input_list:
-            if len(item) == 2:
-                place_names = list(item.keys())
-                place1, place2 = place_names[0], place_names[1]
-                geojson_path1, geojson_path2 = item[place1], item[place2]
-                try:
-                    # 读取GeoJSON文件内容
-                    with open(geojson_path1, 'r', encoding='utf-8') as f:
-                        geojson_str1 = f.read()
-                    with open(geojson_path2, 'r', encoding='utf-8') as f:
-                        geojson_str2 = f.read()
-                    
-                    result = difference(geojson_str1, geojson_str2)
-                    result_dict[f"{place1}-{place2}"] = json.loads(result)
-                except Exception as e:
-                    result_dict[f"{place1}-{place2}"] = None
-            else:
-                continue
-        return result_dict
+            # 获取字典中的两个键值对
+            keys = list(item.keys())
+            if len(keys) >= 2:
+                # 第一个作为source，第二个作为clip
+                task = {
+                    "source": item[keys[0]],
+                    "clip": item[keys[1]]
+                }
+                tasks.append(task)
+        
+        result = difference(tasks)
+        return result
     except Exception as e:
         raise HTTPException(status_code=400, detail=str(e))
 
@@ -748,6 +746,57 @@ def exterior_api(req: ExteriorRequest):
 class GeomAlmostEqualRequest(BaseModel):
     input_list: List[Dict[str, str]]  # 列表元素为字典，包含两个地名和对应的GeoJSON路径
     tolerance: Optional[float] = 1e-9  # 容差（可选）
+
+# 过滤碎片多边形 API
+class FilterSliverPolygonsRequest(BaseModel):
+    input_files_dict: Dict[str, str] = Field(..., description="输入字典，键是任务标识符，值是GeoJSON文件路径")
+    output_directory: str = Field(..., description="输出目录路径")
+    min_area_threshold_m2: float = Field(100.0, description="最小面积阈值（平方米），默认100.0")
+
+class FilterSliverPolygonsResponse(BaseModel):
+    success: bool
+    cleaned_results: Optional[Dict[str, str]]
+    message: str
+
+@app.post("/filter_sliver_polygons", response_model=FilterSliverPolygonsResponse)
+def filter_sliver_polygons_api(request: FilterSliverPolygonsRequest):
+    """
+    对输入的GeoJSON文件进行面积过滤，移除面积过小的碎片多边形。
+    
+    参数:
+    - input_files_dict: 输入字典，键是任务标识符，值是GeoJSON文件路径
+    - output_directory: 输出目录路径
+    - min_area_threshold_m2: 最小面积阈值（平方米）
+    
+    返回:
+    - success: 是否成功
+    - cleaned_results: 过滤后的文件路径字典
+    - message: 处理结果消息
+    """
+    try:
+        cleaned_results = filter_sliver_polygons(
+            input_files_dict=request.input_files_dict,
+            output_directory=request.output_directory,
+            min_area_threshold_m2=request.min_area_threshold_m2
+        )
+        
+        # 检查是否有错误
+        has_errors = "errors" in cleaned_results
+        
+        if has_errors:
+            return FilterSliverPolygonsResponse(
+                success=False,
+                cleaned_results=cleaned_results,
+                message=f"处理完成，但有 {len(cleaned_results['errors'])} 个错误"
+            )
+        
+        return FilterSliverPolygonsResponse(
+            success=True,
+            cleaned_results=cleaned_results,
+            message=f"成功过滤 {len(cleaned_results)} 个文件"
+        )
+    except Exception as e:
+        raise HTTPException(status_code=400, detail=str(e))
 
 @app.post("/geom_almost_equal")
 def geom_almost_equal_api(req: GeomAlmostEqualRequest):
@@ -1764,145 +1813,167 @@ def total_bounds_api(req: TotalBoundsRequest):
         raise HTTPException(status_code=400, detail=str(e))
 
 
-class UAVCoverageRequest(BaseModel):
-    geojson_path: str = Field(..., description="GeoJSON文件路径")
-    num_drones: int = Field(3, description="无人机数量，默认3")
-    swath_width: float = Field(0.0008, description="单次扫描宽度，默认0.0008")
-    altitude: float = Field(100, description="无人机飞行高度，默认100")
-    overlap: float = Field(0.2, description="路径重叠率(0-1)，默认0.2")
-    max_turn_angle: float = Field(45, description="最大转弯角度约束(度)，默认45")
-    angle: float = Field(30, description="路径方向角度(度)，默认30")
-    save_plot: bool = Field(True, description="是否保存可视化图片，默认True")
+# 获取卫星TLE数据 API
+class SatelliteTLERequest(BaseModel):
+    satellite_db_path: str = Field(..., description="卫星数据库路径")
+    mission_theme: str = Field("Land cover", description="任务主题")
+    sensor_type: str = Field("Optical Sensor", description="传感器类型")
 
-
-class UAVCoverageResponse(BaseModel):
+class SatelliteTLEResponse(BaseModel):
     success: bool
+    data: Optional[Dict[str, str]]
     message: str
-    data: Dict
-    plot_image: Optional[str] = None
 
-
-@app.post("/uav_coverage_planning", response_model=UAVCoverageResponse)
-def uav_coverage_planning(req: UAVCoverageRequest):
+@app.post("/get_satellite_tle", response_model=SatelliteTLEResponse)
+def get_satellite_tle_api(request: SatelliteTLERequest):
     """
-    UAV覆盖规划API
-    
-    功能：
-    1. 加载GeoJSON文件中的目标区域
-    2. 为多无人机生成覆盖路径
-    3. 计算路径代价和覆盖率
-    4. 生成可视化结果
-    
-    参数：
-    - geojson_path: GeoJSON文件路径
-    - num_drones: 无人机数量
-    - swath_width: 单次扫描宽度
-    - altitude: 无人机飞行高度
-    - overlap: 路径重叠率
-    - max_turn_angle: 最大转弯角度约束
-    - angle: 路径方向角度
-    - save_plot: 是否保存可视化图片
-    
-    返回：
-    - success: 是否成功
-    - message: 返回信息
-    - data: 规划结果数据
-    - plot_image: 可视化图片的base64编码（可选）
+    从数据库获取符合条件的卫星TLE数据
     """
     try:
-        # 检查GeoJSON文件是否存在
-        if not os.path.exists(req.geojson_path):
-            raise HTTPException(status_code=400, detail=f"GeoJSON文件不存在: {req.geojson_path}")
-        
-        # 创建规划器
-        planner = CoveragePlanner(
-            geojson_path=req.geojson_path,
-            swath_width=req.swath_width,
-            altitude=req.altitude,
-            overlap=req.overlap,
-            max_turn_angle=req.max_turn_angle
+        tle_data = get_valid_satellite_tle_as_dict(
+            satellite_db_path=request.satellite_db_path,
+            mission_theme=request.mission_theme,
+            sensor_type=request.sensor_type
         )
         
-        # 规划覆盖路径
-        drone_paths = planner.plan_coverage(num_drones=req.num_drones, angle=req.angle)
-        
-        # 检查结果
-        if not drone_paths:
-            return UAVCoverageResponse(
+        if not tle_data:
+            return SatelliteTLEResponse(
                 success=False,
-                message="路径规划失败",
-                data={}
+                data=None,
+                message="未找到符合条件的卫星TLE数据"
             )
         
-        # 计算路径信息
-        path_info = []
-        total_cost = 0
-        
-        for i, path in enumerate(drone_paths):
-            path_cost = planner.path_cost(path)
-            total_cost += path_cost
-            
-            path_info.append({
-                "drone_id": i + 1,
-                "path_points": len(path),
-                "path_cost": round(path_cost, 2),
-                "path_coordinates": path
-            })
-        
-        # 计算覆盖率
-        coverage_percent = planner.calculate_coverage(drone_paths)
-        
-        # 准备返回数据
-        result_data = {
-            "planning_time": round(planner.planning_time, 2),
-            "total_cost": round(total_cost, 2),
-            "coverage_percent": round(coverage_percent, 2),
-            "num_drones": req.num_drones,
-            "drone_paths": path_info,
-            "parameters": {
-                "swath_width": req.swath_width,
-                "altitude": req.altitude,
-                "overlap": req.overlap,
-                "max_turn_angle": req.max_turn_angle,
-                "angle": req.angle
-            }
-        }
-        
-        # 生成可视化图片
-        plot_image = None
-        if req.save_plot:
-            try:
-                # 创建图片缓冲区
-                buffer = io.BytesIO()
-                
-                # 绘制覆盖图
-                planner.plot_coverage(drone_paths, save_path=None)
-                
-                # 保存到缓冲区
-                plt.savefig(buffer, format='png', dpi=300, bbox_inches='tight')
-                buffer.seek(0)
-                
-                # 转换为base64编码
-                plot_image = base64.b64encode(buffer.getvalue()).decode('utf-8')
-                
-                # 关闭图片
-                plt.close()
-                
-            except Exception as e:
-                print(f"生成可视化图片失败: {e}")
-                plot_image = None
-        
-        return UAVCoverageResponse(
+        return SatelliteTLEResponse(
             success=True,
-            message="UAV覆盖规划成功",
-            data=result_data,
-            plot_image=plot_image
+            data=tle_data,
+            message=f"成功获取 {len(tle_data)} 颗卫星的TLE数据"
+        )
+    except Exception as e:
+        raise HTTPException(status_code=400, detail=str(e))
+
+# 计算卫星观测重叠率 API
+class ObservationOverlapRequest(BaseModel):
+    tle_dict: Dict[str, str] = Field(..., description="卫星TLE数据字典")
+    start_time_str: str = Field(..., description="开始时间字符串")
+    end_time_str: str = Field(..., description="结束时间字符串")
+    target_geojson_path: str = Field(..., description="目标区域GeoJSON文件路径")
+    fov: float = Field(10.0, description="视场角度")
+    interval_seconds: int = Field(600, description="时间间隔（秒）")
+    output_dir: str = Field(..., description="输出目录")
+
+class ObservationOverlapResponse(BaseModel):
+    success: bool
+    coverage_results: Optional[Dict]
+    message: str
+
+@app.post("/get_observation_overlap", response_model=ObservationOverlapResponse)
+def get_observation_overlap_api(request: ObservationOverlapRequest):
+    """
+    计算卫星观测重叠率
+    """
+    try:
+        coverage_results = get_observation_overlap(
+            tle_dict=request.tle_dict,
+            start_time_str=request.start_time_str,
+            end_time_str=request.end_time_str,
+            target_geojson_path=request.target_geojson_path,
+            fov=request.fov,
+            interval_seconds=request.interval_seconds,
+            output_dir=request.output_dir
         )
         
+        if not coverage_results:
+            return ObservationOverlapResponse(
+                success=False,
+                coverage_results=None,
+                message="在指定时间段内，没有卫星与目标区域发生重叠"
+            )
+        
+        return ObservationOverlapResponse(
+            success=True,
+            coverage_results=coverage_results,
+            message="成功计算卫星观测重叠率"
+        )
     except Exception as e:
-        print(f"UAV覆盖规划API异常: {e}")
-        traceback.print_exc()
-        raise HTTPException(status_code=400, detail=f"UAV覆盖规划失败: {str(e)}")
+        raise HTTPException(status_code=400, detail=str(e))
 
+# 规划卫星方案 API
+class SatellitePlanningRequest(BaseModel):
+    coverage_results: Dict = Field(..., description="覆盖率计算结果")
+    target_geojson_path: str = Field(..., description="目标区域GeoJSON文件路径")
+    target_coverage: float = Field(0.99, description="目标覆盖率")
+    output_dir: str = Field(..., description="输出目录")
 
+class SatellitePlanningResponse(BaseModel):
+    success: bool
+    report: Optional[Dict]
+    intersection_path: Optional[str]
+    map_path: Optional[str]
+    message: str
 
+@app.post("/plan_satellite_combination", response_model=SatellitePlanningResponse)
+def plan_satellite_combination_api(request: SatellitePlanningRequest):
+    """
+    规划卫星方案并生成报告
+    """
+    try:
+        sat_plan_results = plan_satellite_combination(
+            coverage_results=request.coverage_results,
+            target_geojson_path=request.target_geojson_path,
+            target_coverage=request.target_coverage,
+            output_dir=request.output_dir
+        )
+        
+        return SatellitePlanningResponse(
+            success=sat_plan_results.get('success', False),
+            report=sat_plan_results.get('report'),
+            intersection_path=sat_plan_results.get('intersection_path'),
+            map_path=sat_plan_results.get('map_path'),
+            message="卫星方案规划完成"
+        )
+    except Exception as e:
+        raise HTTPException(status_code=400, detail=str(e))
+
+# 无人机协同规划 API
+class UAVPlanningRequest(BaseModel):
+    geojson_path: str = Field(..., description="目标区域GeoJSON文件路径")
+    output_dir: str = Field("planning_results", description="输出目录")
+    create_map: bool = Field(True, description="是否创建地图")
+    verbose: bool = Field(True, description="是否详细输出")
+    UAV_db_path: str = Field("UAV_data.db", description="无人机数据库路径")
+    stations_db_path: str = Field("Stations_data.db", description="地面站数据库路径")
+
+class UAVPlanningResponse(BaseModel):
+    success: bool
+    results_data: Optional[Dict]
+    message: str
+
+@app.post("/run_UAV_GS_planning", response_model=UAVPlanningResponse)
+def run_uav_planning_api(request: UAVPlanningRequest):
+    """
+    执行无人机和地面站协同规划
+    """
+    try:
+        results_data = run_planning_scenario(
+            geojson_path=request.geojson_path,
+            output_dir=request.output_dir,
+            create_map=request.create_map,
+            verbose=request.verbose,
+            UAV_db_path=request.UAV_db_path,
+            stations_db_path=request.stations_db_path
+        )
+        
+        if not results_data:
+            return UAVPlanningResponse(
+                success=False,
+                results_data=None,
+                message="无人机规划失败"
+            )
+        
+        return UAVPlanningResponse(
+            success=True,
+            results_data=results_data,
+            message="无人机协同规划完成"
+        )
+    except Exception as e:
+        raise HTTPException(status_code=400, detail=str(e))

@@ -1,77 +1,91 @@
+# --- [修改后的 difference 函数 v4 - 支持批处理] ---
+# 替换原有的 difference 函数
+
 import geopandas as gpd
 import json
 import os
-from typing import Union, List, Dict
-from shapely.geometry import shape
+import traceback
+from typing import List, Dict
+from shapely.geometry import shape, mapping
+from shapely.ops import unary_union
 
-def difference(geojson_names: Union[str, List[str]], clip_geojson_name: str) -> Union[str, Dict[str, str]]:
+def difference(tasks: List[Dict[str, str]], output_directory: str = "geojson_results") -> Dict[str, str]:
     """
-    计算一个或多个 GeoJSON 文件与另一个 GeoJSON 文件的差集并保存为文件
+    计算多个差集任务（批处理）。
 
     参数:
-        geojson_names (Union[str, List[str]]):
-            - 单个 GeoJSON 文件名（不含路径和扩展名）
-            - 或多个文件名组成的列表
-        clip_geojson_name (str): 用于裁剪的 GeoJSON 文件名 (要移除的对象)
+        tasks (List[Dict[str, str]]): 任务列表。每个字典代表一个任务，包含源文件和裁剪文件路径。
+            示例: [
+                {"source": "path/to/area1.geojson", "clip": "path/to/coverage1.geojson"},
+                {"source": "path/to/area2.geojson", "clip": "path/to/coverage2.geojson"}
+            ]
+        output_directory (str): 用于存储生成的差集文件的目录。
 
     返回:
-        Union[str, Dict[str, str]]:
-            - 如果传入单个名称，返回对应的输出文件名
-            - 如果传入多个名称，返回字典，键为输入文件名，值为对应输出文件名
+        Dict[str, str]: 聚合结果字典。键为组合文件名，值为生成的 GeoJSON 文件的完整路径。
+                       包含一个特殊的 "errors" 键来记录失败的任务详情。
     """
-    # 如果是单个字符串，转为列表处理
-    is_single = isinstance(geojson_names, str)
-    names = [geojson_names] if is_single else geojson_names
-    results = {}
+    aggregated_results = {}
+    error_log = []
 
-    # 读取裁剪 GeoJSON 文件
-    clip_path = os.path.join("geojson", f"{clip_geojson_name}.geojson")
-    with open(clip_path, "r", encoding="utf-8") as f:
-        clip_geojson_data = json.load(f)
-    clip_geometries = [shape(feature["geometry"]) for feature in clip_geojson_data["features"]]
+    for i, task in enumerate(tasks):
+        source_path = task.get("source")
+        clip_path = task.get("clip")
+        task_id_str = f"任务 {i+1} (Source: {os.path.basename(source_path)}, Clip: {os.path.basename(clip_path)})"
 
-    for name in names:
-        input_path = os.path.join("geojson", f"{name}.geojson")
-        output_name = f"{name}_difference"
-        output_path = os.path.join("geojson", f"{output_name}.geojson")
-        
+        if not source_path or not clip_path:
+            message = f"{task_id_str}: 失败 - 输入字典缺少 'source' 或 'clip' 键。"
+            print(message)
+            error_log.append(message)
+            continue
+
         try:
-            # 读取输入GeoJSON文件
-            with open(input_path, "r", encoding="utf-8") as f:
-                geojson_data = json.load(f)
+            # 1. 加载并计算几何体差集 (与上一版本相同)
+            with open(source_path, "r", encoding="utf-8") as f:
+                source_data = json.load(f)
+            source_geometries = [shape(feature["geometry"]) for feature in source_data.get("features", []) if feature.get("geometry")]
+            source_union = unary_union(source_geometries)
 
-            # 提取几何对象
-            geometries = [shape(feature["geometry"]) for feature in geojson_data["features"]]
+            with open(clip_path, "r", encoding="utf-8") as f:
+                clip_data = json.load(f)
+            clip_geometries = [shape(feature["geometry"]) for feature in clip_data.get("features", []) if feature.get("geometry")]
+            clip_union = unary_union(clip_geometries)
 
-            # 构建 GeoSeries
-            gseries = gpd.GeoSeries(geometries)
-            clip_series = gpd.GeoSeries(clip_geometries)
+            result_geometry = source_union.difference(clip_union)
 
-            # 计算差集（difference）
-            diff_gseries = gseries.difference(clip_series.unary_union)  # 将 clip_series 合并为单一几何对象
+            # 2. 准备输出文件路径和字典键名
+            source_basename = os.path.splitext(os.path.basename(source_path))[0]
+            clip_basename = os.path.splitext(os.path.basename(clip_path))[0]
+            output_key = f"{source_basename}_difference_{clip_basename}"
+            output_filename = f"{output_key}.geojson"
 
-            # 生成新的 GeoJSON 结果
-            diff_features = []
-            for i, geom in enumerate(diff_gseries):
-                if not geom.is_empty:  # 仅保留差集后仍有数据的对象
-                    diff_features.append({
-                        "type": "Feature",
-                        "geometry": geom.__geo_interface__,
-                        "properties": geojson_data["features"][i].get("properties", {})  # 保留原始属性
-                    })
+            os.makedirs(output_directory, exist_ok=True)
+            output_filepath = os.path.join(output_directory, output_filename)
 
-            diff_geojson = {
-                "type": "FeatureCollection",
-                "features": diff_features
-            }
+            # 3. 将结果保存为 GeoJSON 文件
+            result_features = []
+            if not result_geometry.is_empty:
+                if hasattr(result_geometry, 'geoms'): # MultiPolygon or GeometryCollection
+                    result_features = [{"type": "Feature", "geometry": mapping(g), "properties": {}} for g in result_geometry.geoms]
+                else: # Single Polygon
+                    result_features = [{"type": "Feature", "geometry": mapping(result_geometry), "properties": {}}]
 
-            # 保存到文件
-            with open(output_path, "w", encoding="utf-8") as f:
-                json.dump(diff_geojson, f, ensure_ascii=False, indent=2)
-            
-            results[name] = output_name
-            
+            result_geojson = {"type": "FeatureCollection", "features": result_features}
+
+            with open(output_filepath, "w", encoding="utf-8") as f:
+                json.dump(result_geojson, f, ensure_ascii=False, indent=2)
+
+            # 4. 存入聚合结果字典
+            aggregated_results[output_key] = output_filepath
+            print(f"{task_id_str}: 成功完成。")
+
         except Exception as e:
-            results[name] = f"Error: {str(e)}"
+            message = f"{task_id_str}: 计算时发生意外错误: {e}"
+            print(message)
+            traceback.print_exc()
+            error_log.append(message)
 
-    return results[geojson_names] if is_single else results
+    if error_log:
+        aggregated_results["errors"] = error_log
+
+    return aggregated_results

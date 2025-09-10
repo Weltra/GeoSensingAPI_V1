@@ -1,3 +1,12 @@
+# -*- coding: utf-8 -*-
+"""
+PROJECT_NAME: GeoSensingAPI
+FILE_NAME: get_observation_overlap
+AUTHOR: welt
+E_MAIL: tjlwelt@foxmail.com
+DATE: 2025-08-23
+"""
+
 import json
 import os
 from pyproj import Proj, Transformer
@@ -5,7 +14,6 @@ from shapely.geometry import shape, Polygon, MultiPolygon
 from shapely.ops import unary_union, transform
 from shapely.validation import make_valid
 from shapely.geometry import mapping
-from datetime import datetime, timedelta
 from satelliteTool.get_observation_lace import get_coverage_lace
 
 

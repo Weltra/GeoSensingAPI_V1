@@ -1,0 +1,264 @@
+<!DOCTYPE html>
+<html>
+<head>
+    
+    <meta http-equiv="content-type" content="text/html; charset=UTF-8" />
+    
+        <script>
+            L_NO_TOUCH = false;
+            L_DISABLE_3D = false;
+        </script>
+    
+    <style>html, body {width: 100%;height: 100%;margin: 0;padding: 0;}</style>
+    <style>#map {position:absolute;top:0;bottom:0;right:0;left:0;}</style>
+    <script src="https://cdn.jsdelivr.net/npm/leaflet@1.9.3/dist/leaflet.js"></script>
+    <script src="https://code.jquery.com/jquery-3.7.1.min.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/bootstrap@5.2.2/dist/js/bootstrap.bundle.min.js"></script>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/Leaflet.awesome-markers/2.0.2/leaflet.awesome-markers.js"></script>
+    <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/leaflet@1.9.3/dist/leaflet.css"/>
+    <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/bootstrap@5.2.2/dist/css/bootstrap.min.css"/>
+    <link rel="stylesheet" href="https://netdna.bootstrapcdn.com/bootstrap/3.0.0/css/bootstrap-glyphicons.css"/>
+    <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/@fortawesome/fontawesome-free@6.2.0/css/all.min.css"/>
+    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/Leaflet.awesome-markers/2.0.2/leaflet.awesome-markers.css"/>
+    <link rel="stylesheet" href="https://cdn.jsdelivr.net/gh/python-visualization/folium/folium/templates/leaflet.awesome.rotate.min.css"/>
+    
+            <meta name="viewport" content="width=device-width,
+                initial-scale=1.0, maximum-scale=1.0, user-scalable=no" />
+            <style>
+                #map_c1db2dbf6d456722dd16bfe56651db6d {
+                    position: relative;
+                    width: 100.0%;
+                    height: 100.0%;
+                    left: 0.0%;
+                    top: 0.0%;
+                }
+                .leaflet-container { font-size: 1rem; }
+            </style>
+        
+</head>
+<body>
+    
+    
+            <div style="position: fixed; 
+                        bottom: 50px; left: 50px; width: 200px; height: 120px; 
+                        background-color: white; border:2px solid grey; z-index:9999; 
+                        font-size:14px; padding: 10px">
+            <p><b>覆盖率图例</b></p>
+            <p><i class="fa fa-circle" style="color:green"></i> 高覆盖率 (≥80%)</p>
+            <p><i class="fa fa-circle" style="color:blue"></i> 中等覆盖率 (50-80%)</p>
+            <p><i class="fa fa-circle" style="color:orange"></i> 低覆盖率 (20-50%)</p>
+            <p><i class="fa fa-circle" style="color:red"></i> 很低覆盖率 (<20%)</p>
+            </div>
+            
+    
+            <div class="folium-map" id="map_c1db2dbf6d456722dd16bfe56651db6d" ></div>
+        
+</body>
+<script>
+    
+    
+            var map_c1db2dbf6d456722dd16bfe56651db6d = L.map(
+                "map_c1db2dbf6d456722dd16bfe56651db6d",
+                {
+                    center: [30.4, 114.4],
+                    crs: L.CRS.EPSG3857,
+                    zoom: 10,
+                    zoomControl: true,
+                    preferCanvas: false,
+                }
+            );
+
+            
+
+        
+    
+            var tile_layer_43cede9acc7069010d3e9ed45988cc84 = L.tileLayer(
+                "https://{s}.basemaps.cartocdn.com/light_all/{z}/{x}/{y}{r}.png",
+                {"attribution": "\u0026copy; \u003ca href=\"https://www.openstreetmap.org/copyright\"\u003eOpenStreetMap\u003c/a\u003e contributors \u0026copy; \u003ca href=\"https://carto.com/attributions\"\u003eCARTO\u003c/a\u003e", "detectRetina": false, "maxNativeZoom": 20, "maxZoom": 20, "minZoom": 0, "noWrap": false, "opacity": 1, "subdomains": "abcd", "tms": false}
+            );
+        
+    
+            tile_layer_43cede9acc7069010d3e9ed45988cc84.addTo(map_c1db2dbf6d456722dd16bfe56651db6d);
+        
+    
+        function geo_json_1b9602e3c27464bcb8b1a01562e07fe5_styler(feature) {
+            switch(feature.properties.name) {
+                default:
+                    return {"color": "black", "fillColor": "black", "fillOpacity": 0.05, "weight": 3};
+            }
+        }
+
+        function geo_json_1b9602e3c27464bcb8b1a01562e07fe5_onEachFeature(feature, layer) {
+            layer.on({
+            });
+        };
+        var geo_json_1b9602e3c27464bcb8b1a01562e07fe5 = L.geoJson(null, {
+                onEachFeature: geo_json_1b9602e3c27464bcb8b1a01562e07fe5_onEachFeature,
+            
+                style: geo_json_1b9602e3c27464bcb8b1a01562e07fe5_styler,
+        });
+
+        function geo_json_1b9602e3c27464bcb8b1a01562e07fe5_add (data) {
+            geo_json_1b9602e3c27464bcb8b1a01562e07fe5
+                .addData(data);
+        }
+            geo_json_1b9602e3c27464bcb8b1a01562e07fe5_add({"features": [{"geometry": {"coordinates": [[[114.0, 30.0], [114.8, 30.0], [114.8, 30.8], [114.0, 30.8], [114.0, 30.0]]], "type": "Polygon"}, "properties": {"name": "\u6b66\u6c49\u5e02"}, "type": "Feature"}], "type": "FeatureCollection"});
+
+        
+    
+            geo_json_1b9602e3c27464bcb8b1a01562e07fe5.bindTooltip(
+                `<div>
+                     武汉市研究区域
+                 </div>`,
+                {"sticky": true}
+            );
+        
+    
+            geo_json_1b9602e3c27464bcb8b1a01562e07fe5.addTo(map_c1db2dbf6d456722dd16bfe56651db6d);
+        
+    
+        function geo_json_5ccd7ad01d3748b683313a9de1dd0ca1_styler(feature) {
+            switch(feature.properties.satellite) {
+                default:
+                    return {"color": "green", "fillColor": "green", "fillOpacity": 0.3, "weight": 1};
+            }
+        }
+
+        function geo_json_5ccd7ad01d3748b683313a9de1dd0ca1_onEachFeature(feature, layer) {
+            layer.on({
+            });
+        };
+        var geo_json_5ccd7ad01d3748b683313a9de1dd0ca1 = L.geoJson(null, {
+                onEachFeature: geo_json_5ccd7ad01d3748b683313a9de1dd0ca1_onEachFeature,
+            
+                style: geo_json_5ccd7ad01d3748b683313a9de1dd0ca1_styler,
+        });
+
+        function geo_json_5ccd7ad01d3748b683313a9de1dd0ca1_add (data) {
+            geo_json_5ccd7ad01d3748b683313a9de1dd0ca1
+                .addData(data);
+        }
+            geo_json_5ccd7ad01d3748b683313a9de1dd0ca1_add({"features": [{"geometry": {"coordinates": [[[114.0, 30.8], [114.8, 30.8], [114.8, 30.0], [114.0, 30.0], [114.0, 30.8]]], "type": "Polygon"}, "properties": {"original_feature_id": "unknown", "satellite": "GAOFEN 1-03", "timestamp": "2025-08-01T02:10:00+00:00"}, "type": "Feature"}], "type": "FeatureCollection"});
+
+        
+    
+            geo_json_5ccd7ad01d3748b683313a9de1dd0ca1.bindTooltip(
+                `<div>
+                     GAOFEN 1-03<br>覆盖率: 100.00%<br>相交足迹: 1个
+                 </div>`,
+                {"sticky": true}
+            );
+        
+    
+            geo_json_5ccd7ad01d3748b683313a9de1dd0ca1.addTo(map_c1db2dbf6d456722dd16bfe56651db6d);
+        
+    
+            var marker_4e7d6acb1d0cd4da937337c028b8fa91 = L.marker(
+                [30.4, 114.40000000000002],
+                {}
+            ).addTo(map_c1db2dbf6d456722dd16bfe56651db6d);
+        
+    
+            var icon_52c28e5acb505bb47855b9279db29f7d = L.AwesomeMarkers.icon(
+                {"extraClasses": "fa-rotate-0", "icon": "satellite", "iconColor": "white", "markerColor": "green", "prefix": "fa"}
+            );
+            marker_4e7d6acb1d0cd4da937337c028b8fa91.setIcon(icon_52c28e5acb505bb47855b9279db29f7d);
+        
+    
+        var popup_1dcbf41321d8bebd44c1d28afae018e9 = L.popup({"maxWidth": "100%"});
+
+        
+            
+                var html_c20cff5ddf6195377ed2b176508c9f96 = $(`<div id="html_c20cff5ddf6195377ed2b176508c9f96" style="width: 100.0%; height: 100.0%;"><b>GAOFEN 1-03</b><br>覆盖率: 100.00%<br>相交足迹: 1个</div>`)[0];
+                popup_1dcbf41321d8bebd44c1d28afae018e9.setContent(html_c20cff5ddf6195377ed2b176508c9f96);
+            
+        
+
+        marker_4e7d6acb1d0cd4da937337c028b8fa91.bindPopup(popup_1dcbf41321d8bebd44c1d28afae018e9)
+        ;
+
+        
+    
+    
+        function geo_json_a26698802e92cfc4b82f74902d2c24ba_styler(feature) {
+            switch(feature.properties.satellite) {
+                default:
+                    return {"color": "red", "fillColor": "red", "fillOpacity": 0.3, "weight": 1};
+            }
+        }
+
+        function geo_json_a26698802e92cfc4b82f74902d2c24ba_onEachFeature(feature, layer) {
+            layer.on({
+            });
+        };
+        var geo_json_a26698802e92cfc4b82f74902d2c24ba = L.geoJson(null, {
+                onEachFeature: geo_json_a26698802e92cfc4b82f74902d2c24ba_onEachFeature,
+            
+                style: geo_json_a26698802e92cfc4b82f74902d2c24ba_styler,
+        });
+
+        function geo_json_a26698802e92cfc4b82f74902d2c24ba_add (data) {
+            geo_json_a26698802e92cfc4b82f74902d2c24ba
+                .addData(data);
+        }
+            geo_json_a26698802e92cfc4b82f74902d2c24ba_add({"features": [{"geometry": {"coordinates": [[[114.076705, 30.432556], [114.189715, 30.212801], [114.27099765052502, 30.0], [114.0, 30.0], [114.0, 30.548834952641432], [114.076705, 30.432556]]], "type": "Polygon"}, "properties": {"original_feature_id": "unknown", "satellite": "GAOFEN 1", "timestamp": "2025-08-01T14:40:00+00:00"}, "type": "Feature"}], "type": "FeatureCollection"});
+
+        
+    
+            geo_json_a26698802e92cfc4b82f74902d2c24ba.bindTooltip(
+                `<div>
+                     GAOFEN 1<br>覆盖率: 13.01%<br>相交足迹: 1个
+                 </div>`,
+                {"sticky": true}
+            );
+        
+    
+            geo_json_a26698802e92cfc4b82f74902d2c24ba.addTo(map_c1db2dbf6d456722dd16bfe56651db6d);
+        
+    
+            var marker_d349a5b21a504035c9fd1e0d1fbf6f42 = L.marker(
+                [30.193370800571856, 114.09528755213951],
+                {}
+            ).addTo(map_c1db2dbf6d456722dd16bfe56651db6d);
+        
+    
+            var icon_cada0ac4442a77031e19a0d775532873 = L.AwesomeMarkers.icon(
+                {"extraClasses": "fa-rotate-0", "icon": "satellite", "iconColor": "white", "markerColor": "red", "prefix": "fa"}
+            );
+            marker_d349a5b21a504035c9fd1e0d1fbf6f42.setIcon(icon_cada0ac4442a77031e19a0d775532873);
+        
+    
+        var popup_3055ea66f08979874f0080e71ffbd64f = L.popup({"maxWidth": "100%"});
+
+        
+            
+                var html_b5d6903b94f179a3d6387ac8cea48562 = $(`<div id="html_b5d6903b94f179a3d6387ac8cea48562" style="width: 100.0%; height: 100.0%;"><b>GAOFEN 1</b><br>覆盖率: 13.01%<br>相交足迹: 1个</div>`)[0];
+                popup_3055ea66f08979874f0080e71ffbd64f.setContent(html_b5d6903b94f179a3d6387ac8cea48562);
+            
+        
+
+        marker_d349a5b21a504035c9fd1e0d1fbf6f42.bindPopup(popup_3055ea66f08979874f0080e71ffbd64f)
+        ;
+
+        
+    
+    
+            var layer_control_bc415b51ef339cd74336e9662a632390_layers = {
+                base_layers : {
+                    "cartodbpositron" : tile_layer_43cede9acc7069010d3e9ed45988cc84,
+                },
+                overlays :  {
+                    "\u6b66\u6c49\u5e02\u8fb9\u754c" : geo_json_1b9602e3c27464bcb8b1a01562e07fe5,
+                    "\u536b\u661f\u8986\u76d6-GAOFEN 1-03" : geo_json_5ccd7ad01d3748b683313a9de1dd0ca1,
+                    "\u536b\u661f\u8986\u76d6-GAOFEN 1" : geo_json_a26698802e92cfc4b82f74902d2c24ba,
+                },
+            };
+            let layer_control_bc415b51ef339cd74336e9662a632390 = L.control.layers(
+                layer_control_bc415b51ef339cd74336e9662a632390_layers.base_layers,
+                layer_control_bc415b51ef339cd74336e9662a632390_layers.overlays,
+                {"autoZIndex": true, "collapsed": false, "position": "topleft"}
+            ).addTo(map_c1db2dbf6d456722dd16bfe56651db6d);
+
+        
+</script>
+</html>
