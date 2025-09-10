@@ -8,6 +8,8 @@ DATE: 2025-08-23
 REVISION_NOTES: 重构为从外部数据库和场景文件读取数据。
                 修改 calculate_ssci_from_database 函数，使其返回JSON而不是打印。
                 新增逻辑，只返回得分大于0的结果。
+                修改函数签名，直接接收场景配置字典。
+                修改主程序测试块，使用明文（字典）输入代替文件加载。
 """
 
 import numpy as np
@@ -47,12 +49,16 @@ class SSCI_Evaluator:
 
 		# 步骤 1: 对指定列取倒数
 		for col_idx in reciprocal_cols:
-			processed_data[:, col_idx] = np.reciprocal(processed_data[:, col_idx],
-			                                           where=processed_data[:, col_idx] != 0)
+			# 避免除以零
+			non_zero_mask = processed_data[:, col_idx] != 0
+			processed_data[non_zero_mask, col_idx] = np.reciprocal(processed_data[non_zero_mask, col_idx])
 
 		# 步骤 2: 标准化 - 除以每列的最大值
 		max_vals = np.max(processed_data, axis=0)
-		processed_data = np.divide(processed_data, max_vals, where=max_vals != 0)
+		# 避免除以零
+		non_zero_max_mask = max_vals != 0
+		processed_data[:, non_zero_max_mask] = np.divide(processed_data[:, non_zero_max_mask],
+		                                                 max_vals[non_zero_max_mask])
 
 		# 步骤 3: 人为加权 - 乘以用户定义的权重
 		if weights is not None:
@@ -84,23 +90,32 @@ class SSCI_Evaluator:
 		capability_vectors = pca.fit_transform(preprocessed_matrix)
 		explained_variance_ratio = pca.explained_variance_ratio_
 		cumulative_variance = np.cumsum(explained_variance_ratio)
-		n_components = np.argmax(cumulative_variance >= info_threshold) + 1
+
+		# 确保至少选择一个主成分
+		n_components = np.argmax(cumulative_variance >= info_threshold) + 1 if np.any(
+			cumulative_variance >= info_threshold) else len(cumulative_variance)
+		if n_components == 0 and len(cumulative_variance) > 0: n_components = 1
+
 		capability_vectors_selected = capability_vectors[:, :n_components]
 		explained_variance_ratio_selected = explained_variance_ratio[:n_components]
-		ssci_weights = explained_variance_ratio_selected / np.sum(explained_variance_ratio_selected)
+
+		# 避免除以零
+		sum_explained_variance = np.sum(explained_variance_ratio_selected)
+		if sum_explained_variance == 0: return np.zeros(raw_data.shape[0]), capability_vectors_selected
+
+		ssci_weights = explained_variance_ratio_selected / sum_explained_variance
 		ssci_scores = np.sum(capability_vectors_selected * ssci_weights, axis=1)
+
 		return ssci_scores, capability_vectors_selected
 
 
-def calculate_ssci_from_database(db_path, scenario_path, scenario_key) -> str:
+def calculate_ssci_from_database(db_path: str, scenario_config: dict) -> str:
 	"""
-	从数据库和场景文件加载数据，执行SSCI评估，并以JSON格式返回结果。
+	从数据库加载数据，根据传入的场景配置执行SSCI评估，并以JSON格式返回结果。
 	"""
 	try:
-		# 1. 加载场景配置
-		with open(scenario_path, 'r', encoding='utf-8') as f:
-			scenario = json.load(f)[scenario_key]
-		ssci_config = scenario['models']['ssci']
+		# 1. 直接使用传入的场景配置字典
+		ssci_config = scenario_config['models']['ssci']
 
 		# 2. 从数据库查询传感器数据
 		param_names_in_order = list(ssci_config['weights_by_name'].keys())
@@ -109,6 +124,9 @@ def calculate_ssci_from_database(db_path, scenario_path, scenario_key) -> str:
 		df_sensors = pd.read_sql_query(query, con)
 		con.close()
 		df_sensors.dropna(inplace=True)
+
+		if df_sensors.empty:
+			raise ValueError("数据库中没有找到符合所有必需参数的有效传感器数据。")
 
 		sensor_names = df_sensors['name'].tolist()
 		raw_data = df_sensors[param_names_in_order].to_numpy()
@@ -133,7 +151,7 @@ def calculate_ssci_from_database(db_path, scenario_path, scenario_key) -> str:
 		for idx in sorted_indices:
 			all_ranked_sensors.append({
 				"name": sensor_names[idx],
-				"ssci_score": ssci_results[idx]
+				"ssci_score": float(ssci_results[idx])  # 确保是标准float类型
 			})
 
 		# 6. 过滤并重新排名
@@ -143,7 +161,7 @@ def calculate_ssci_from_database(db_path, scenario_path, scenario_key) -> str:
 
 		result_json = {
 			"status": "success",
-			"scenario": scenario_key,
+			"scenario": scenario_config.get('description', 'Custom Scenario'),
 			"model": "SSCI",
 			"description": ssci_config.get('description', ''),
 			"results": positive_sensors
@@ -153,7 +171,7 @@ def calculate_ssci_from_database(db_path, scenario_path, scenario_key) -> str:
 	except Exception as e:
 		error_json = {
 			"status": "error",
-			"scenario": scenario_key,
+			"scenario": scenario_config.get('description', 'Custom Scenario'),
 			"model": "SSCI",
 			"message": str(e)
 		}
@@ -161,7 +179,33 @@ def calculate_ssci_from_database(db_path, scenario_path, scenario_key) -> str:
 
 
 if __name__ == '__main__':
-	json_output = calculate_ssci_from_database(db_path="D:\\GeoSensingAPI\\data\\sensors_enriched.db",
-	                                           scenario_path="D:\\GeoSensingAPI\\data\\scenarios.json",
-	                                           scenario_key="wuhan_disaster_monitoring_2025")
+	# --- MODIFICATION START ---
+	# 更新的调用方式：使用明文（Python字典）作为输入场景
+	db_file_path = "D:\\GeoSensingAPI\\data\\sensors_enriched.db"
+
+	# 直接在此处定义场景配置字典
+	ssci_scenario_config = {
+		"description": "基于传感器的静态技术参数，评估其在通用土地覆盖测绘任务中的综合潜力。",
+		"models": {
+			"ssci": {
+				"description": "SSCI模型通过主成分分析，聚焦于传感器硬件的静态能力，如分辨率、幅宽、量化比特等。",
+				"weights_by_name": {
+					"swath_km": 0.8,
+					"spatial_resolution_m": 1.2,
+					"quantization_bits": 1.0,
+					"temporal_resolution_days": 1.1,
+					"onboard_storage_gb": 0.6,
+					"power_w": 0.5
+				},
+				"reciprocal_cols_by_name": [
+					"spatial_resolution_m",
+					"temporal_resolution_days"
+				]
+			}
+		}
+	}
+
+	json_output = calculate_ssci_from_database(db_path=db_file_path,
+	                                           scenario_config=ssci_scenario_config)
+	# --- MODIFICATION END ---
 	print(json_output)
