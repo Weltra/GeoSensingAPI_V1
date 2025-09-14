@@ -3,7 +3,7 @@
 import json
 import numpy as np
 from typing import Dict
-from query_utils import query_sensors
+from EvaluationTool.query_sensors import query_sensors
 from satelliteTool.get_observation_overlap import get_observation_overlap
 
 

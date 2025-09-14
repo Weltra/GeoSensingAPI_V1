@@ -2,7 +2,30 @@
 
 import sqlite3
 import pandas as pd
+import numpy as np
 from typing import Dict, Any
+
+
+def clean_data_for_json(data):
+    """
+    清理数据中的无效浮点数值，确保JSON序列化兼容
+    """
+    if isinstance(data, dict):
+        return {k: clean_data_for_json(v) for k, v in data.items()}
+    elif isinstance(data, list):
+        return [clean_data_for_json(item) for item in data]
+    elif isinstance(data, (np.integer, np.floating)):
+        if np.isnan(data) or np.isinf(data):
+            return None
+        return float(data) if isinstance(data, np.floating) else int(data)
+    elif isinstance(data, float):
+        if np.isnan(data) or np.isinf(data):
+            return None
+        return data
+    elif pd.isna(data):
+        return None
+    else:
+        return data
 
 
 def query_sensors(db_path: str, sensor_name: str = None, mission_theme: str = None, sensor_type: str = None) -> Dict[
@@ -63,7 +86,12 @@ def query_sensors(db_path: str, sensor_name: str = None, mission_theme: str = No
 			return {}
 
 		df_sensors.set_index('name', inplace=True)
-		return df_sensors.to_dict('index')
+		
+		# 转换为字典并清理数据
+		result_dict = df_sensors.to_dict('index')
+		cleaned_result = clean_data_for_json(result_dict)
+		
+		return cleaned_result
 
 	except Exception as e:
 		print(f"数据库查询失败: {e}")

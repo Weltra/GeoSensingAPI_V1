@@ -3,12 +3,13 @@ import requests
 import osm2geojson
 import json
 from typing import List, Union, Dict
+import sys
+
+# 添加项目根目录到路径
+sys.path.append(os.path.dirname(os.path.dirname(__file__)))
+from config import get_geojson_path
 
 OVERPASS_URL = "http://overpass-api.de/api/interpreter"
-SAVE_DIR = "./geojson"
-
-# 确保保存目录存在
-os.makedirs(SAVE_DIR, exist_ok=True)
 
 def fetch_boundary_and_save(place_name: str) -> Union[str, Dict[str, str]]:
     """
@@ -25,13 +26,12 @@ def fetch_boundary_and_save(place_name: str) -> Union[str, Dict[str, str]]:
 
     if response.status_code == 200:
         geojson_data = osm2geojson.xml2geojson(response.text)
-        file_path = os.path.join(SAVE_DIR, f"{place_name.replace(' ', '_')}.geojson")
+        file_path = get_geojson_path(f"{place_name.replace(' ', '_')}.geojson")
         with open(file_path, "w", encoding="utf-8") as f:
             json.dump(geojson_data, f, ensure_ascii=False, indent=2)
         return file_path
     else:
-        return f"Request for '{place_name}' failed, status code {response.status_code}"
-
+        return f"Error: HTTP {response.status_code}"
 
 def get_boundary(place_names: Union[str, List[str]]) -> Union[str, Dict[str, str]]:
     """
@@ -39,15 +39,18 @@ def get_boundary(place_names: Union[str, List[str]]) -> Union[str, Dict[str, str
     :param place_names: 地名字符串或字符串列表
     :return: 单个路径或 {place_name: 路径}
     """
+    # 如果是单个字符串，转为列表处理
+    is_single = isinstance(place_names, str)
+    names = [place_names] if is_single else place_names
     results = {}
-    if isinstance(place_names, str):
+    
+    for name in names:
+        result = fetch_boundary_and_save(name)
+        results[name] = result
+    
+    return results[place_names] if is_single else results
 
-        results[place_names] = fetch_boundary_and_save(place_names)
-        return results
-    elif isinstance(place_names, list):
-        # results = {}
-        for name in place_names:
-            results[name] = fetch_boundary_and_save(name)
-        return results
-    else:
-        return "Invalid input type: place_names must be a string or a list of strings"
+if __name__ == "__main__":
+    # 测试代码
+    result = get_boundary("Wuhan")
+    print(f"结果: {result}")

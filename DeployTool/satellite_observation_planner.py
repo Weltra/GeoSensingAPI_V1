@@ -28,6 +28,11 @@ from pyproj import Proj, Transformer
 from shapely.geometry import shape, mapping, Polygon, MultiPolygon
 from shapely.ops import unary_union, transform
 from shapely.validation import make_valid
+import sys
+
+# 添加项目根目录到路径
+sys.path.append(os.path.dirname(os.path.dirname(__file__)))
+from config import get_geojson_path
 
 # ==============================================================================
 # 导入外部工具函数
@@ -56,8 +61,7 @@ def split_antimeridian(geom):
 def plan_satellite_combination(
 		coverage_results: dict,
 		target_geojson_path: str,
-		target_coverage: float,
-		output_dir: str
+		target_coverage: float = 0.99
 ) -> dict:
 	"""
 	根据预先计算好的覆盖率数据，规划最优方案并生成报告、地图。
@@ -68,7 +72,6 @@ def plan_satellite_combination(
 	print(f"\n[1/3] 正在准备规划环境...")
 
 	area_name = os.path.basename(target_geojson_path).split('.')[0]
-	os.makedirs(output_dir, exist_ok=True)
 
 	try:
 		# 确保使用 utf-8 编码读取文件
@@ -85,9 +88,12 @@ def plan_satellite_combination(
 	transformer = Transformer.from_proj(wgs84_proj, equal_area_proj, always_xy=True)
 	target_area = transform(transformer.transform, target_shape).area
 
+	# --- 性能优化: 预加载并合并每个卫星的足迹几何图形 ---
+	print("   - 正在预加载卫星足迹数据以提高计算速度...")
 	preloaded_geometries = {}
 	for sat, data in coverage_results.items():
-		path = data.get('intersection_footprints_path')
+		# 修改：使用 'overlap_file' 而不是 'intersection_footprints_path'
+		path = data.get('overlap_file')
 		if path and os.path.exists(path):
 			try:
 				with open(path, 'r', encoding='utf-8') as f:
@@ -99,6 +105,8 @@ def plan_satellite_combination(
 					preloaded_geometries[sat] = unary_union(footprints)
 			except Exception as e:
 				print(f"   - 警告: 预加载卫星 '{sat}' 的数据失败: {e}")
+	print(f"   - ✅ 成功预加载 {len(preloaded_geometries)} 颗卫星的数据。")
+	# --- 优化结束 ---
 
 	optimal_plan, best_effort_plan = None, None
 
@@ -120,7 +128,8 @@ def plan_satellite_combination(
 			for combo in combinations(sorted_sats, combo_size):
 				# 从预加载的字典中获取几何对象，而不是从文件中反复读取
 				footprints_to_merge = [preloaded_geometries[s] for s in combo if s in preloaded_geometries]
-				if not footprints_to_merge: continue
+				if not footprints_to_merge: 
+					continue
 
 				# 正确的计算方式：合并这个组合中所有卫星的几何对象
 				merged_fp = unary_union(footprints_to_merge)
@@ -130,9 +139,10 @@ def plan_satellite_combination(
 					optimal_plan = {'type': 'combination', 'satellites': list(combo), 'coverage': combo_coverage}
 					print(f"✅ 找到最佳组合方案: {list(combo)} (覆盖率: {combo_coverage:.2%})")
 					break
-			if optimal_plan: break
+			if optimal_plan: 
+				break
 
-	# “尽力而为”方案 (同样使用预加载的数据)
+	# "尽力而为"方案 (同样使用预加载的数据)
 	if not optimal_plan:
 		print("   未能找到满足目标的方案，正在计算'尽力而为'的最佳方案...")
 		all_sats = list(preloaded_geometries.keys())
@@ -150,11 +160,15 @@ def plan_satellite_combination(
 	plan_to_use = optimal_plan or best_effort_plan
 
 	# 生成报告
-	report = {'target_area_path': target_geojson_path, 'target_coverage_goal': target_coverage,
-	          'coverage_by_satellite': {k: v['coverage_ratio'] for k, v in coverage_results.items()},
-	          'optimal_plan': optimal_plan, 'best_effort_plan': best_effort_plan,
-	          'generation_time': datetime.now().isoformat()}
-	report_path = os.path.join(output_dir, f"{area_name}_planning_report.json")
+	report = {
+		'target_area_path': target_geojson_path, 
+		'target_coverage_goal': target_coverage,
+		'coverage_by_satellite': {k: v['coverage_ratio'] for k, v in coverage_results.items()},
+		'optimal_plan': optimal_plan, 
+		'best_effort_plan': best_effort_plan,
+		'generation_time': datetime.now().isoformat()
+	}
+	report_path = get_geojson_path(f"{area_name}_planning_report.json")
 	with open(report_path, 'w', encoding='utf-8') as f:
 		json.dump(report, f, ensure_ascii=False, indent=2)
 	print(f"✅ 规划报告已保存到: {report_path}")
@@ -168,7 +182,8 @@ def plan_satellite_combination(
 	colors = ['#e6194b', '#3cb44b', '#ffe119', '#4363d8', '#f58231', '#911eb4', '#46f0f0']
 	sorted_results = sorted(coverage_results.items(), key=lambda item: item[1]['coverage_ratio'], reverse=True)
 	for i, (sat_name, data) in enumerate(sorted_results):
-		path = data.get('intersection_footprints_path')
+		# 修改：使用 'overlap_file' 而不是 'intersection_footprints_path'
+		path = data.get('overlap_file')
 		if path and os.path.exists(path):
 			folium.GeoJson(
 				path, name=f"{sat_name} ({data['coverage_ratio']:.1%})",
@@ -176,7 +191,7 @@ def plan_satellite_combination(
 				tooltip=f"<b>{sat_name}</b><br>覆盖率: {data['coverage_ratio']:.2%}"
 			).add_to(m)
 	folium.LayerControl(collapsed=False).add_to(m)
-	map_path = os.path.join(output_dir, f"{area_name}_coverage_map.html")
+	map_path = get_geojson_path(f"{area_name}_coverage_map.html")
 	m.save(map_path)
 	print(f"✅ 可视化地图已保存到: {map_path}")
 
@@ -185,16 +200,18 @@ def plan_satellite_combination(
 	if plan_to_use:
 		final_footprints = []
 		for s in plan_to_use['satellites']:
-			path = coverage_results[s].get('intersection_footprints_path')
+			# 修改：使用 'overlap_file' 而不是 'intersection_footprints_path'
+			path = coverage_results[s].get('overlap_file')
 			if path and os.path.exists(path):
-				with open(path, 'r', encoding='utf-8') as f: geo_data = json.load(f)
+				with open(path, 'r', encoding='utf-8') as f: 
+					geo_data = json.load(f)
 				final_footprints.extend([shape(feat['geometry']) for feat in geo_data.get('features', [])])
 		if final_footprints:
 			final_union = unary_union([make_valid(fp) for fp in final_footprints])
 			final_intersection = final_union.intersection(target_shape)
 			feature = geojson.Feature(geometry=mapping(final_intersection), properties=plan_to_use)
 			intersection_geojson = geojson.FeatureCollection([feature])
-			intersection_path = os.path.join(output_dir, f"{area_name}_final_intersection.geojson")
+			intersection_path = get_geojson_path(f"{area_name}_final_intersection.geojson")
 			with open(intersection_path, 'w', encoding='utf-8') as f:
 				json.dump(intersection_geojson, f, ensure_ascii=False, indent=2)
 			print(f"✅ 最终方案交集GeoJSON已保存到: {intersection_path}")
@@ -222,9 +239,6 @@ def main():
 	target_coverage_goal = 0.95
 	satellite_fov = 11.0
 	time_interval_seconds = 600
-	base_output_dir = "Wuhan_Planning_Results_Toolchain"
-	overlap_output_dir = os.path.join(base_output_dir, "B_observation_overlaps")
-	final_plan_output_dir = os.path.join(base_output_dir, "C_final_plan")
 
 	# --- 步骤 A: 获取 TLE 数据 ---
 	print("\n" + "=" * 60)
@@ -236,7 +250,8 @@ def main():
 			mission_theme='Land cover',
 			sensor_type='Optical Sensor'
 		)
-		if not tle_data: raise ValueError("数据库中没有找到符合条件的TLE数据")
+		if not tle_data: 
+			raise ValueError("数据库中没有找到符合条件的TLE数据")
 		print(f"✅ 成功从数据库加载 {len(tle_data)} 颗卫星的 TLE 数据。")
 	except Exception as e:
 		print(f"❌ 步骤 A 失败: {e}")
@@ -248,9 +263,12 @@ def main():
 	print("=" * 60)
 	try:
 		coverage_results = get_observation_overlap(
-			tle_dict=tle_data, start_time_str=start_time, end_time_str=end_time,
-			target_geojson_path=target_geojson_path, fov=satellite_fov,
-			interval_seconds=time_interval_seconds, output_dir=overlap_output_dir
+			tle_dict=tle_data, 
+			start_time_str=start_time, 
+			end_time_str=end_time,
+			target_geojson_path=target_geojson_path, 
+			fov=satellite_fov,
+			interval_seconds=time_interval_seconds
 		)
 		if not coverage_results:
 			print("\n⚠️ 在指定时间段内，没有卫星覆盖目标区域。规划流程结束。")
@@ -266,8 +284,7 @@ def main():
 	final_results = plan_satellite_combination(
 		coverage_results=coverage_results,
 		target_geojson_path=target_geojson_path,
-		target_coverage=target_coverage_goal,
-		output_dir=final_plan_output_dir
+		target_coverage=target_coverage_goal
 	)
 
 	# --- 4. 打印最终摘要 ---
@@ -289,7 +306,7 @@ def main():
 			print(f"  - 类型: 所有相交卫星组合")
 			print(f"  - 卫星: {', '.join(plan['satellites'])}")
 			print(f"  - 预估覆盖率: {plan['coverage']:.2%}")
-		print(f"  - 详细结果见: '{os.path.abspath(final_plan_output_dir)}'")
+		print(f"  - 详细结果保存在全局 geojson 目录")
 		print("=" * 60)
 	else:
 		print("\n❌ 未能生成任何最终规划方案。")

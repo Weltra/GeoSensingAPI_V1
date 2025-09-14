@@ -11,7 +11,7 @@ import os
 # 添加路径
 sys.path.append('satelliteTool')
 
-from satelliteTool.get_observation_lace import get_coverage_lace
+from satelliteTool.get_observation_lace import get_observation_lace
 from GeoPandasTool.intersects import intersects
 
 
@@ -38,7 +38,7 @@ def main():
         }
 
     # 获取卫星覆盖轨迹
-    coverage = get_coverage_lace(
+    coverage = get_observation_lace(
         tle_dict=tle_data,
         start_time_str="2025-08-01 00:00:00.000",
         end_time_str="2025-08-01 23:59:59.000",

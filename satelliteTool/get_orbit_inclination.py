@@ -1,3 +1,10 @@
+"""
+PROJECT_NAME: GeoSensingAPI
+FILE_NAME: get_orbit_inclination
+AUTHOR: welt
+E_MAIL: tjlwelt@foxmail.com
+DATE: 2025-09-14
+"""
 from skyfield.api import EarthSatellite, load
 
 
