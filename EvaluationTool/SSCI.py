@@ -9,7 +9,7 @@ DATE: 2025-08-23
 import numpy as np
 import json
 from sklearn.decomposition import PCA
-from query_utils import query_sensors
+from EvaluationTool.query_sensors import query_sensors
 
 
 class SSCI_Evaluator:

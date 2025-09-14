@@ -12,7 +12,7 @@ import json
 import pandas as pd
 import random
 from typing import List, Dict, Any
-from query_utils import query_sensors
+from EvaluationTool.query_sensors import query_sensors
 
 
 class OCEM_Evaluator:

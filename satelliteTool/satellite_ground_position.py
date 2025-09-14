@@ -47,13 +47,13 @@ def satellite_ground_position(tle_data, timestamp_str, fov=45):
     return json.dumps(overpass_api_result, indent=2)
 
 
-# 示例用法
-tle_data = """
-ISS (ZARYA)
-1 25544U 98067A   24065.53334491  .00016717  00000+0  30284-3 0  9993
-2 25544  51.6412  41.1547 0003617 280.9252  79.1211 15.50344612453610
-"""
-timestamp_str = "2025-03-04 12:00:00.000"  # 示例时间戳
-ground_coverage = satellite_ground_position(tle_data, timestamp_str)
-print(ground_coverage)
-
+if __name__ == "__main__":
+    # 示例用法
+    tle_data = """
+    ISS (ZARYA)
+    1 25544U 98067A   24065.53334491  .00016717  00000+0  30284-3 0  9993
+    2 25544  51.6412  41.1547 0003617 280.9252  79.1211 15.50344612453610
+    """
+    timestamp_str = "2025-03-04 12:00:00.000"  # 示例时间戳
+    ground_coverage = satellite_ground_position(tle_data, timestamp_str)
+    print(ground_coverage)

@@ -14,7 +14,13 @@ from shapely.geometry import shape, Polygon, MultiPolygon
 from shapely.ops import unary_union, transform
 from shapely.validation import make_valid
 from shapely.geometry import mapping
-from satelliteTool.get_observation_lace import get_coverage_lace
+from datetime import datetime, timedelta
+import sys
+
+# 添加项目根目录到路径
+sys.path.append(os.path.dirname(os.path.dirname(__file__)))
+from config import get_geojson_path
+from satelliteTool.get_observation_lace import get_observation_lace
 
 
 def split_antimeridian(geom):
@@ -44,17 +50,17 @@ def get_observation_overlap(
 		end_time_str: str,
 		target_geojson_path: str,
 		fov: float = 10.0,
-		interval_seconds: int = 300,
-		output_dir: str = 'intersection_results'  # <--- MODIFICATION: 新增输出目录参数
+		interval_seconds: int = 300
 ) -> dict:
 	"""
     计算卫星观测与目标区域的重叠率，并将相交足迹保存到文件后返回路径。
     """
 	# 1. 调用函数获取所有卫星的覆盖足迹文件路径
-	coverage_paths_dict = get_coverage_lace(
+	coverage_paths_dict = get_observation_lace(
 		tle_dict=tle_dict,
 		start_time_str=start_time_str,
 		end_time_str=end_time_str,
+		target_geojson_path=target_geojson_path,
 		fov=fov,
 		interval_seconds=interval_seconds
 	)
@@ -87,9 +93,6 @@ def get_observation_overlap(
 	if target_area == 0:
 		return {}
 
-	# --- MODIFICATION: 确保输出目录存在 ---
-	os.makedirs(output_dir, exist_ok=True)
-
 	# 3. 逐个卫星进行处理
 	overlap_results = {}
 	for satellite_name, coverage_path in coverage_paths_dict.items():
@@ -112,19 +115,26 @@ def get_observation_overlap(
 
 		# 4. 对每个足迹单独求交集
 		for feature in satellite_geojson['features']:
-			if not feature.get('geometry'): continue
+			if not feature.get('geometry'):
+				continue
 			try:
 				footprint_geom = shape(feature['geometry'])
-				if not footprint_geom.is_valid: footprint_geom = make_valid(footprint_geom)
+				if not footprint_geom.is_valid:
+					footprint_geom = make_valid(footprint_geom)
 				footprint_geom = split_antimeridian(footprint_geom)
-				if footprint_geom.is_empty: continue
+				if footprint_geom.is_empty:
+					continue
 
 				intersection = footprint_geom.intersection(target_polygon)
 				if not intersection.is_empty:
 					intersections.append(intersection)
 					intersection_feature = {
-						'type': 'Feature', 'geometry': mapping(intersection),
-						'properties': {'satellite': satellite_name, 'timestamp': feature['properties']['timestamp']}
+						'type': 'Feature',
+						'geometry': mapping(intersection),
+						'properties': {
+							'satellite': satellite_name,
+							'timestamp': feature['properties']['timestamp']
+						}
 					}
 					intersecting_footprints_features.append(intersection_feature)
 			except Exception as e:
@@ -139,11 +149,11 @@ def get_observation_overlap(
 			coverage_ratio = min(1.0, intersection_area / target_area)
 
 			if coverage_ratio > 0:
-				# --- MODIFICATION START: 将相交足迹写入文件并返回路径 ---
+				# 使用全局geojson目录保存文件
 				safe_name = "".join(c for c in satellite_name if c.isalnum() or c in (' ', '-')).rstrip().replace(' ',
 				                                                                                                  '_')
-				output_filename = f"{safe_name}_intersection.json"
-				output_path = os.path.join(output_dir, output_filename)
+				output_filename = f"{safe_name}_overlap.geojson"
+				output_path = get_geojson_path(output_filename)
 
 				intersecting_geojson_content = {
 					"type": "FeatureCollection",
@@ -154,60 +164,34 @@ def get_observation_overlap(
 
 				overlap_results[satellite_name] = {
 					'coverage_ratio': coverage_ratio,
-					'intersection_footprints_path': output_path
+					'intersection_area': intersection_area,
+					'target_area': target_area,
+					'overlap_file': output_path
 				}
-		# --- MODIFICATION END ---
+
+				print(f"✅ 卫星 {satellite_name} 覆盖率: {coverage_ratio:.2%}")
+
+	# 保存汇总结果到全局geojson目录
+	summary_path = get_geojson_path("coverage_summary.json")
+	with open(summary_path, 'w', encoding='utf-8') as f:
+		json.dump(overlap_results, f, ensure_ascii=False, indent=2)
+
+	print(f"✅ 覆盖率汇总已保存到: {summary_path}")
+	print(f"\n✅ 重叠结果文件已在计算过程中生成于全局 geojson 目录。")
+
 	return overlap_results
 
 
 if __name__ == '__main__':
-	tle_data_dict = {
-		"GAOFEN 1-03": "1 43260U 18031B   25225.93764942  .00000729  00000-0  11133-3 0  9998\n2 43260  97.7673 284.6950 0004656 311.5203  48.5607 14.76597261397351",
-		"SENTINEL 2A": "1 40697U 15028A   25225.66220237  .00000108  00000-0  57680-4 0  9995\n2 40697  98.5664 299.9242 0001176  96.3963 263.7354 14.30826489529757",
-		"LANDSAT 9": "1 49260U 21088A   25225.90087331  .00000343  00000-0  86120-4 0  9998\n2 49260  98.2240 295.6621 0001152  92.7233 267.4097 14.57102349206250",
+	# 测试代码
+	test_tle = {
+		"TEST_SAT": "1 25544U 98067A   08264.51782528 -.00002182  00000-0 -11606-4 0  2927\n2 25544  51.6416 247.4627 0006703 130.5360 325.0288 15.72125391563537"
 	}
 
-	wuhan_geojson_path = 'wuhan_target.json'
-	wuhan_target_content = {
-		"type": "FeatureCollection", "features": [{"type": "Feature", "properties": {}, "geometry": {
-			"type": "Polygon",
-			"coordinates": [[[114.0, 30.0], [114.8, 30.0], [114.8, 30.8], [114.0, 30.8], [114.0, 30.0]]]
-		}}]
-	}
-	with open(wuhan_geojson_path, 'w', encoding='utf-8') as f:
-		json.dump(wuhan_target_content, f)
-
-	start_time = "2025-08-24 00:00:00.000"
-	end_time = "2025-08-24 01:00:00.000"
-	field_of_view = 45.0
-	time_interval = 600
-	intersection_output_dir = 'intersection_results'  # 指定重叠结果的输出目录
-
-	print("--- 开始计算卫星观测重叠率 ---")
-	print(f"--- 卫星覆盖范围文件将生成在 'geojson' 目录 ---")
-	print(f"--- 目标区域文件: {wuhan_geojson_path} ---")
-	print(f"--- 重叠结果文件将生成在 '{intersection_output_dir}' 目录 ---")
-
-	overlap_results = get_observation_overlap(
-		tle_dict=tle_data_dict,
-		start_time_str=start_time,
-		end_time_str=end_time,
-		target_geojson_path=wuhan_geojson_path,
-		fov=field_of_view,
-		interval_seconds=time_interval,
-		output_dir=intersection_output_dir
+	result = get_observation_overlap(
+		test_tle,
+		"2025-08-01T00:00:00.000Z",
+		"2025-08-01T01:00:00.000Z",
+		"test.geojson"
 	)
-
-	print("\n" + "=" * 50)
-	print("--- 计算结果 ---")
-	if overlap_results:
-		for satellite, data in overlap_results.items():
-			coverage = data['coverage_ratio']
-			# --- MODIFICATION: 打印文件路径而不是足迹数量 ---
-			footprint_path = data['intersection_footprints_path']
-			print(f"  - 卫星: {satellite:<15} | 覆盖率: {coverage:>7.2%} | 结果文件: {footprint_path}")
-
-		print(f"\n✅ 重叠结果文件已在计算过程中生成于 '{intersection_output_dir}' 目录。")
-	else:
-		print("  在指定时间段内，没有卫星覆盖目标区域。")
-	print("=" * 50)
+	print(f"结果: {result}")

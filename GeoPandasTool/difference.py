@@ -1,91 +1,125 @@
-# --- [修改后的 difference 函数 v4 - 支持批处理] ---
-# 替换原有的 difference 函数
+import os
+from typing import Union, List, Dict
 
 import geopandas as gpd
-import json
-import os
-import traceback
-from typing import List, Dict
-from shapely.geometry import shape, mapping
-from shapely.ops import unary_union
 
-def difference(tasks: List[Dict[str, str]], output_directory: str = "geojson_results") -> Dict[str, str]:
-    """
-    计算多个差集任务（批处理）。
 
-    参数:
-        tasks (List[Dict[str, str]]): 任务列表。每个字典代表一个任务，包含源文件和裁剪文件路径。
-            示例: [
-                {"source": "path/to/area1.geojson", "clip": "path/to/coverage1.geojson"},
-                {"source": "path/to/area2.geojson", "clip": "path/to/coverage2.geojson"}
-            ]
-        output_directory (str): 用于存储生成的差集文件的目录。
+def get_projection_crs(gdf: gpd.GeoDataFrame) -> str:
+	"""为给定的GeoDataFrame计算合适的UTM坐标参考系。"""
+	if gdf.empty:
+		return "EPSG:3857"  # Fallback CRS
+	try:
+		# 使用 unary_union 来正确处理包含多个要素的 GDF
+		centroid = gdf.unary_union.centroid
+		lon, lat = centroid.x, centroid.y
+		utm_band = str(int((lon + 180) // 6 + 1))
+		epsg_code = '326' + utm_band.zfill(2) if lat >= 0 else '327' + utm_band.zfill(2)
+		return f"EPSG:{epsg_code}"
+	except Exception:
+		# 如果出现任何异常，返回一个通用的投影坐标系
+		return "EPSG:3857"
 
-    返回:
-        Dict[str, str]: 聚合结果字典。键为组合文件名，值为生成的 GeoJSON 文件的完整路径。
-                       包含一个特殊的 "errors" 键来记录失败的任务详情。
-    """
-    aggregated_results = {}
-    error_log = []
 
-    for i, task in enumerate(tasks):
-        source_path = task.get("source")
-        clip_path = task.get("clip")
-        task_id_str = f"任务 {i+1} (Source: {os.path.basename(source_path)}, Clip: {os.path.basename(clip_path)})"
+def difference(geojson_names: Union[str, List[str]], clip_geojson_name: str) -> Dict[str, str]:
+	"""
+   计算一个或多个 GeoJSON 文件与另一个 GeoJSON 文件的差集，并精确过滤每一个细碎多边形后保存。
 
-        if not source_path or not clip_path:
-            message = f"{task_id_str}: 失败 - 输入字典缺少 'source' 或 'clip' 键。"
-            print(message)
-            error_log.append(message)
-            continue
+   Args:
+      geojson_names (Union[str, List[str]]):
+         - 单个 GeoJSON 文件名（不含路径和扩展名）
+         - 或多个文件名组成的列表
+      clip_geojson_name (str): 用于裁剪的 GeoJSON 文件名 (要移除的对象)
 
-        try:
-            # 1. 加载并计算几何体差集 (与上一版本相同)
-            with open(source_path, "r", encoding="utf-8") as f:
-                source_data = json.load(f)
-            source_geometries = [shape(feature["geometry"]) for feature in source_data.get("features", []) if feature.get("geometry")]
-            source_union = unary_union(source_geometries)
+   Returns:
+      Dict[str, str]:
+         - 始终返回字典，键为输入文件名，值为对应输出文件名。
+   """
+	names = [geojson_names] if isinstance(geojson_names, str) else geojson_names
+	results = {}
 
-            with open(clip_path, "r", encoding="utf-8") as f:
-                clip_data = json.load(f)
-            clip_geometries = [shape(feature["geometry"]) for feature in clip_data.get("features", []) if feature.get("geometry")]
-            clip_union = unary_union(clip_geometries)
+	try:
+		clip_path = os.path.join("geojson", f"{clip_geojson_name}.geojson")
+		clip_gdf = gpd.read_file(clip_path)
+	except Exception as e:
+		print(f"ERROR: 无法读取裁剪文件 {clip_geojson_name}.geojson: {e}")
+		for name in names:
+			results[name] = f"Error: Failed to read clip file {clip_geojson_name}.geojson"
+		return results
 
-            result_geometry = source_union.difference(clip_union)
+	for name in names:
+		input_path = os.path.join("geojson", f"{name}.geojson")
+		output_name = f"{name}_difference_filtered"
+		output_path = os.path.join("geojson", f"{output_name}.geojson")
 
-            # 2. 准备输出文件路径和字典键名
-            source_basename = os.path.splitext(os.path.basename(source_path))[0]
-            clip_basename = os.path.splitext(os.path.basename(clip_path))[0]
-            output_key = f"{source_basename}_difference_{clip_basename}"
-            output_filename = f"{output_key}.geojson"
+		try:
+			source_gdf = gpd.read_file(input_path)
+			if source_gdf.empty:
+				print(f"INFO: 源文件 {name} 为空，跳过处理。")
+				results[name] = output_name
+				gpd.GeoDataFrame(geometry=[], crs="EPSG:4326").to_file(output_path, driver='GeoJSON')
+				continue
 
-            os.makedirs(output_directory, exist_ok=True)
-            output_filepath = os.path.join(output_directory, output_filename)
+			# 1. 确定并转换到合适的UTM坐标系
+			projected_crs = get_projection_crs(source_gdf)
+			print(f"INFO: 为 {name} 自动选择UTM坐标系: {projected_crs}")
+			source_gdf_proj = source_gdf.to_crs(projected_crs)
+			clip_gdf_proj = clip_gdf.to_crs(projected_crs)
 
-            # 3. 将结果保存为 GeoJSON 文件
-            result_features = []
-            if not result_geometry.is_empty:
-                if hasattr(result_geometry, 'geoms'): # MultiPolygon or GeometryCollection
-                    result_features = [{"type": "Feature", "geometry": mapping(g), "properties": {}} for g in result_geometry.geoms]
-                else: # Single Polygon
-                    result_features = [{"type": "Feature", "geometry": mapping(result_geometry), "properties": {}}]
+			# 2. 在投影坐标系下执行差集运算
+			clip_union_proj = clip_gdf_proj.unary_union
+			source_gdf_proj['geometry'] = source_gdf_proj.geometry.difference(clip_union_proj)
 
-            result_geojson = {"type": "FeatureCollection", "features": result_features}
+			# 3. 几何清理
+			source_gdf_proj['geometry'] = source_gdf_proj.geometry.buffer(0)
+			source_gdf_proj = source_gdf_proj[~source_gdf_proj.geometry.is_empty]
 
-            with open(output_filepath, "w", encoding="utf-8") as f:
-                json.dump(result_geojson, f, ensure_ascii=False, indent=2)
+			if source_gdf_proj.empty:
+				print(f"INFO: 为 {name} 计算差集和清理后，没有剩余的有效区域。")
+				results[name] = output_name
+				gpd.GeoDataFrame(geometry=[], crs="EPSG:4326").to_file(output_path, driver='GeoJSON')
+				continue
 
-            # 4. 存入聚合结果字典
-            aggregated_results[output_key] = output_filepath
-            print(f"{task_id_str}: 成功完成。")
+			# --- 【核心修正】---
+			# 4. 使用 explode 分解 MultiPolygon，确保对每个独立多边形进行过滤
+			# index_parts=False 可以确保索引不重复
+			exploded_gdf_proj = source_gdf_proj.explode(index_parts=False)
 
-        except Exception as e:
-            message = f"{task_id_str}: 计算时发生意外错误: {e}"
-            print(message)
-            traceback.print_exc()
-            error_log.append(message)
+			# 5. 自动阈值计算与过滤
+			initial_count = len(exploded_gdf_proj)
 
-    if error_log:
-        aggregated_results["errors"] = error_log
+			# 5.1. 自动计算面积过滤阈值
+			areas = exploded_gdf_proj.area
+			significant_areas = areas[areas > 1.0]
 
-    return aggregated_results
+			if not significant_areas.empty:
+				area_quantile = significant_areas.quantile(0.10)
+				min_area_threshold_m2 = max(200.0, min(area_quantile, 10000.0))
+			else:
+				min_area_threshold_m2 = 200.0
+
+			print(f"INFO: 为 {name} 自动计算的过滤阈值为 {min_area_threshold_m2:.2f} m²")
+
+			# 5.2. 在分解后的数据上进行过滤
+			filtered_gdf_proj = exploded_gdf_proj[exploded_gdf_proj.geometry.area >= min_area_threshold_m2]
+
+			final_count = len(filtered_gdf_proj)
+			print(f"INFO: 过滤前有 {initial_count} 个独立区域，过滤后保留 {final_count} 个。")
+
+			if filtered_gdf_proj.empty:
+				print(f"INFO: 为 {name} 过滤后没有剩余区域。")
+				results[name] = output_name
+				gpd.GeoDataFrame(geometry=[], crs="EPSG:4326").to_file(output_path, driver='GeoJSON')
+				continue
+
+			# 6. 转换回 WGS84 并保存结果
+			final_gdf_wgs84 = filtered_gdf_proj.to_crs("EPSG:4326")
+			final_gdf_wgs84.to_file(output_path, driver='GeoJSON')
+
+			results[name] = output_name
+			print(f"✅ 成功处理 {name}，结果保存至 {output_name}.geojson")
+
+		except Exception as e:
+			print(f"ERROR: 处理 {name} 时发生错误: {e}")
+			results[name] = f"Error: {str(e)}"
+
+	return results

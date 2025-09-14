@@ -12,7 +12,6 @@ import traceback
 
 # --- 导入所有工具函数 ---
 from GeoPandasTool.difference import difference
-from GeoPandasTool.filter_sliver_polygons import filter_sliver_polygons
 from satelliteTool.find_Satellite import get_valid_satellite_tle_as_dict
 from DeployTool.UAV_GS_planner import run_planning_scenario
 import geopandas as gpd
@@ -303,14 +302,12 @@ def main():
 	# --- 步骤 4: 调用无人机补全规划 ---
 	print("\n" + "=" * 20 + " 步骤4: 调用无人机场景函数进行补全规划 " + "=" * 20)
 	TEMP_FILE_PATH = "temp_uncovered_for_scenario.geojson"
-	OUTPUT_DIR = "completion_results"
 	completion_results = None
 	try:
 		with open(TEMP_FILE_PATH, 'w', encoding='utf-8') as f:
 			json.dump(uncovered_area, f)
 		completion_results = run_planning_scenario(
 			geojson_path=TEMP_FILE_PATH,
-			output_dir=OUTPUT_DIR,
 			create_map=True,
 			verbose=True,
 			UAV_db_path="data/UAV_data.db",
@@ -323,7 +320,7 @@ def main():
 
 	# --- 步骤 5: 处理结果并生成最终的综合地图 ---
 	if completion_results:
-		print(f"\n🎉 补全规划成功！详细结果保存在 '{OUTPUT_DIR}' 文件夹中。")
+		# print(f"\n🎉 补全规划成功！详细结果保存在 '{}' 文件夹中。")
 		with open(intersection_file, 'r', encoding='utf-8') as f:
 			covered_geojson = json.load(f)
 		planning_mode = "空地协同" if completion_results.get("ground_station_contribution", {}).get("station_count",
