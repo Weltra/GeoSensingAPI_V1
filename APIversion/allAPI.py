@@ -26,13 +26,14 @@ from geopandas_api import app as geopandas_app
 from satellite_api import app as satellite_app
 from deploy_api import app as deploy_app
 from evaluation_api import app as evaluation_app
+from visualization_api import app as visualization_app
 
 
 # 初始化一个主FastAPI应用实例
 # 我们为这个综合API服务设置了新的标题和描述
 app = FastAPI(
 	title="综合地理空间智能工具 API",
-	description="一个集成了地理空间处理(GeoPandasTool)、卫星工具(SatelliteTool)、传感器部署(DeployTool)和模型评估(EvaluationTool)功能的综合API服务。",
+	description="一个集成了地理空间处理(GeoPandasTool)、卫星工具(SatelliteTool)、传感器部署(DeployTool)、模型评估(EvaluationTool)和可视化(VisualizationTool)功能的综合API服务。",
 	version="1.0.0",
 )
 
@@ -44,6 +45,7 @@ app.include_router(geopandas_app.router, tags=["地理空间处理 (GeoPandasToo
 app.include_router(satellite_app.router, tags=["卫星工具 (SatelliteTool)"])
 app.include_router(deploy_app.router, tags=["传感器部署 (DeployTool)"])
 app.include_router(evaluation_app.router, tags=["模型评估 (EvaluationTool)"])
+app.include_router(visualization_app.router, tags=["可视化工具 (VisualizationTool)"])
 
 
 @app.get("/", tags=["根路径 (Root)"])
