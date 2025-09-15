@@ -1,14 +1,14 @@
 import json
-import traceback
+from typing import List, Dict, Optional, Literal
+
 from fastapi import FastAPI, HTTPException
 from pydantic import BaseModel, Field
-from typing import List, Union, Dict, Optional, Tuple, Literal
 
+from EvaluationTool.DOCI import calculate_doci
+from EvaluationTool.OCEM import calculate_ocem
 # EvaluationTool imports
 from EvaluationTool.SSCI import calculate_ssci
-from EvaluationTool.OCEM import calculate_ocem
-from EvaluationTool.DOCI import calculate_doci
-from EvaluationTool.query_utils import query_sensors
+from EvaluationTool.query_sensors import query_sensors
 
 # 创建FastAPI应用
 app = FastAPI(title="EvaluationTool API", description="传感器评估工具API")
